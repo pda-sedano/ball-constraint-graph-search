@@ -1,0 +1,12 @@
+.DS_Store
+.vscode
+claude
+Graph Ball-Constraint Search Design_files
+*.html
+
+# Python
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.hypothesis/
+venv

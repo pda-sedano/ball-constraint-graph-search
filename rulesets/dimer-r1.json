@@ -1,0 +1,8 @@
+{
+  "format": 1,
+  "name": "dimer-r1",
+  "r": 1,
+  "types": [
+    {"label": "one-neighbor", "edges": [[0, 1]]}
+  ]
+}

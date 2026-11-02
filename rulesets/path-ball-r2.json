@@ -1,0 +1,8 @@
+{
+  "format": 1,
+  "name": "path-ball-r2",
+  "r": 2,
+  "types": [
+    {"label": "path", "edges": [[0, 1], [0, 2], [1, 3], [2, 4]]}
+  ]
+}
