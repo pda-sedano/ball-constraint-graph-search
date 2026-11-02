@@ -11,15 +11,15 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .balltype import BallType
-from .report import LoadReport
+from balltype import BallType, Edge
+from report import IssueCode, LoadReport
 
 
 @dataclass(frozen=True)
 class Ruleset:
     """Radius r and an ordered tuple of ball types, in the order written.
 
-    Construct directly in code (enumeration, extraction) or via ``io.load_ruleset``.
+    Construct directly in code (enumeration, extraction) or via ``ruleset_io.load_ruleset``.
     Construction does not validate against r; call ``check_ruleset``.
 
     Note: ``metadata`` is a dict, so instances compare with ``==`` but are not
@@ -39,10 +39,10 @@ class Ruleset:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __len__(self) -> int:
-        raise NotImplementedError
+        return len(self.types)
 
     def __iter__(self) -> Iterator[BallType]:
-        raise NotImplementedError
+        return iter(self.types)
 
     def is_shallow(self, ball: BallType) -> bool:
         """True if ``ball.depth < self.r``.
@@ -50,16 +50,19 @@ class Ruleset:
         Shallow types are kept: one applies only when n equals its size, which
         is not known until search time.
         """
-        raise NotImplementedError
+        return ball.depth < self.r
 
     def shallow_indices(self) -> tuple[int, ...]:
         """Indices of shallow types, in order."""
-        raise NotImplementedError
+        return tuple(i for i, ball in enumerate(self.types) if self.is_shallow(ball))
 
     @property
     def max_root_degree(self) -> int:
-        """Largest root degree over all types. The sampler's hard degree cap."""
-        raise NotImplementedError
+        """Largest root degree over all types. The sampler's hard degree cap.
+
+        0 for an empty ruleset: with no types, no node may have a neighbor.
+        """
+        return max((ball.root_degree for ball in self.types), default=0)
 
 
 def check_ruleset(ruleset: Ruleset, report: LoadReport | None = None) -> LoadReport:
@@ -79,4 +82,33 @@ def check_ruleset(ruleset: Ruleset, report: LoadReport | None = None) -> LoadRep
     Returns:
         The report that was appended to.
     """
-    raise NotImplementedError
+    if report is None:
+        report = LoadReport()
+
+    r = ruleset.r
+    r_valid = isinstance(r, int) and not isinstance(r, bool) and r >= 1
+    if not r_valid:
+        report.add(IssueCode.BAD_VALUE, f"r must be an int of at least 1, got {r!r}")
+
+    if not ruleset.types:
+        report.add(IssueCode.EMPTY_RULESET, "ruleset has no types")
+
+    first_seen: dict[tuple[int, tuple[Edge, ...]], int] = {}
+    for i, ball in enumerate(ruleset.types):
+        # Depth checks mean nothing against an invalid r, which is already reported.
+        if r_valid and ball.depth > r:
+            report.add(IssueCode.BEYOND_RADIUS, f"depth {ball.depth} exceeds r = {r}", i)
+        elif r_valid and ball.depth < r:
+            report.add(
+                IssueCode.SHALLOW_TYPE,
+                f"depth {ball.depth} is less than r = {r}; applies only when n = {ball.num_nodes}",
+                i,
+            )
+
+        key = ball.structure_key
+        if key in first_seen:
+            report.add(IssueCode.EXACT_DUPLICATE, f"same edges as type {first_seen[key]}", i)
+        else:
+            first_seen[key] = i
+
+    return report

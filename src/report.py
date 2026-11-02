@@ -91,11 +91,12 @@ class Issue:
     @property
     def severity(self) -> Severity:
         """Severity looked up from ``SEVERITY``."""
-        raise NotImplementedError
+        return SEVERITY[self.code]
 
     def __str__(self) -> str:
         """One line, e.g. ``error [self_loop] type 2: node 1 is adjacent to itself``."""
-        raise NotImplementedError
+        where = f" type {self.type_index}" if self.type_index is not None else ""
+        return f"{self.severity.value} [{self.code.value}]{where}: {self.message}"
 
 
 @dataclass
@@ -109,42 +110,49 @@ class LoadReport:
 
     def add(self, code: IssueCode, message: str, type_index: int | None = None) -> None:
         """Append a new issue."""
-        raise NotImplementedError
+        self.issues.append(Issue(code, message, type_index))
 
     def extend(self, issues: list[Issue]) -> None:
         """Append issues produced elsewhere, e.g. by ``check_edge_list``."""
-        raise NotImplementedError
+        self.issues.extend(issues)
 
     @property
     def errors(self) -> list[Issue]:
         """Issues with severity ERROR."""
-        raise NotImplementedError
+        return [i for i in self.issues if i.severity is Severity.ERROR]
 
     @property
     def warnings(self) -> list[Issue]:
         """Issues with severity WARNING."""
-        raise NotImplementedError
+        return [i for i in self.issues if i.severity is Severity.WARNING]
 
     @property
     def ok(self) -> bool:
         """True when there are no errors. Warnings do not count."""
-        raise NotImplementedError
+        return not self.errors
 
     def codes(self) -> set[IssueCode]:
         """The set of codes present. Convenient for tests."""
-        raise NotImplementedError
+        return {i.code for i in self.issues}
 
     def raise_if_errors(self) -> None:
         """Raise ``RulesetError`` carrying this report if there are any errors."""
-        raise NotImplementedError
+        if self.errors:
+            raise RulesetError(self)
 
     def __str__(self) -> str:
         """Multi-line summary: counts first, then one line per issue."""
-        raise NotImplementedError
+        def count(n: int, noun: str) -> str:
+            return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+        lines = [f"{count(len(self.errors), 'error')}, {count(len(self.warnings), 'warning')}"]
+        lines += [f"  {issue}" for issue in self.issues]
+        return "\n".join(lines)
 
 
 class RulesetError(ValueError):
     """Raised by strict loading. Carries the full report, not just the first error."""
 
     def __init__(self, report: LoadReport) -> None:
-        raise NotImplementedError
+        super().__init__(str(report))
+        self.report = report

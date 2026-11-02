@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ballsearch"
+name = "graph-search"
 version = "0.0.1"
 description = "Search over connected graphs satisfying radius-r ball constraints"
 requires-python = ">=3.10"
@@ -16,8 +16,9 @@ draw = ["matplotlib>=3.7"]
 dev = ["pytest>=8", "hypothesis>=6"]
 # Step 2 adds: canonical = ["pynauty>=2.8"]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["balltype", "draw", "report", "ruleset", "ruleset_io"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

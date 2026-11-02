@@ -19,14 +19,14 @@ from typing import Any
 
 import networkx as nx
 
-from .report import Issue
+from report import Issue, IssueCode
 
 Edge = tuple[int, int]
 
 
 def normalize_edge(u: int, v: int) -> Edge:
     """Return the edge as ``(min, max)``."""
-    raise NotImplementedError
+    return (u, v) if u <= v else (v, u)
 
 
 def check_edge_list(raw_edges: Any, type_index: int | None = None) -> list[Issue]:
@@ -50,7 +50,76 @@ def check_edge_list(raw_edges: Any, type_index: int | None = None) -> list[Issue
     Returns:
         Issues found. Empty means ``BallType.from_edges`` will succeed.
     """
-    raise NotImplementedError
+    issues: list[Issue] = []
+
+    def report(code: IssueCode, message: str) -> None:
+        issues.append(Issue(code, message, type_index))
+
+    if not isinstance(raw_edges, list):
+        report(IssueCode.BAD_VALUE, f"edges must be a list, got {type(raw_edges).__name__}")
+        return issues
+
+    # Nodes and edges from entries that passed the per-edge checks. Self-loop
+    # nodes still count as nodes; negative and malformed entries are dropped.
+    nodes: set[int] = set()
+    seen: set[Edge] = set()
+
+    for i, entry in enumerate(raw_edges):
+        if not (
+            isinstance(entry, list)
+            and len(entry) == 2
+            and all(isinstance(x, int) and not isinstance(x, bool) for x in entry)
+        ):
+            report(IssueCode.MALFORMED_EDGE, f"edge {i} is not a pair of ints: {entry!r}")
+            continue
+        u, v = entry
+        if u < 0 or v < 0:
+            report(IssueCode.NEGATIVE_NODE, f"edge {i} has a negative node: {entry!r}")
+            continue
+        nodes.update((u, v))
+        if u == v:
+            report(IssueCode.SELF_LOOP, f"edge {i}: node {u} is adjacent to itself")
+            continue
+        edge = normalize_edge(u, v)
+        if edge in seen:
+            report(IssueCode.REPEATED_EDGE, f"edge {i} repeats {list(edge)}")
+            continue
+        seen.add(edge)
+
+    nodes = nodes or {0}
+    num_nodes = max(nodes) + 1
+    missing = sorted(set(range(num_nodes)) - nodes)
+    if missing:
+        report(IssueCode.NODE_GAP, f"nodes must be 0..{num_nodes - 1}; missing {missing}")
+        return issues
+
+    graph = nx.Graph()
+    graph.add_nodes_from(range(num_nodes))
+    graph.add_edges_from(seen)
+    unreachable = sorted(set(range(num_nodes)) - nx.node_connected_component(graph, 0))
+    if unreachable:
+        report(IssueCode.DISCONNECTED, f"nodes not connected to the root: {unreachable}")
+
+    return issues
+
+
+class InvalidBallError(ValueError):
+    """Raised when building a ``BallType`` from edges ``check_edge_list`` rejects.
+
+    Attributes:
+        issues: Every issue found, so callers such as the loader can report them.
+    """
+
+    def __init__(self, issues: list[Issue]) -> None:
+        details = "; ".join(str(i) for i in issues)
+        super().__init__(f"invalid ball type: {details}")
+        self.issues = issues
+
+
+def _raise_if_issues(issues: list[Issue]) -> None:
+    """Raise ``InvalidBallError`` listing every issue, if there are any."""
+    if issues:
+        raise InvalidBallError(issues)
 
 
 @dataclass(frozen=True)
@@ -81,11 +150,30 @@ class BallType:
     def __post_init__(self) -> None:
         """Verify invariants and compute ``layers`` and ``degrees``.
 
-        Raise ``ValueError`` if ``edges`` is not normalized and sorted, or if the
-        structure would fail ``check_edge_list``. Set the derived fields with
+        Raise ``ValueError`` if ``edges`` is not normalized and sorted, if the
+        structure would fail ``check_edge_list``, or if num_nodes is inconsistent
+        with the edge list. Set the derived fields with
         ``object.__setattr__`` since the dataclass is frozen.
         """
-        raise NotImplementedError
+        _raise_if_issues(check_edge_list([list(e) for e in self.edges]))
+        if any(tuple(e) != normalize_edge(*e) for e in self.edges):
+            raise ValueError("edges must be normalized as (min, max)")
+        if list(self.edges) != sorted(self.edges):
+            raise ValueError("edges must be sorted")
+        inferred = max(v for e in self.edges for v in e) + 1 if self.edges else 1
+        if self.num_nodes != inferred:
+            raise ValueError(f"num_nodes is {self.num_nodes} but edges span {inferred} nodes")
+
+        graph = nx.Graph()
+        graph.add_nodes_from(range(self.num_nodes))
+        graph.add_edges_from(self.edges)
+
+        # bfs_layers does not promise any order within a layer, so sort each one.
+        layers = tuple(tuple(sorted(layer)) for layer in nx.bfs_layers(graph, 0))
+        degrees = tuple(graph.degree[v] for v in range(self.num_nodes))
+
+        object.__setattr__(self, "layers", layers)
+        object.__setattr__(self, "degrees", degrees)
 
     @classmethod
     def from_edges(
@@ -97,10 +185,21 @@ class BallType:
     ) -> BallType:
         """Build from any edge iterable: normalize, sort, infer ``num_nodes``.
 
-        An empty iterable gives the single-node ball. Raises ``ValueError`` on
-        input that ``check_edge_list`` would reject.
+        An empty iterable gives the single-node ball. Raises ``InvalidBallError``
+        on input that ``check_edge_list`` would reject, with issues describing
+        the edges as passed in.
         """
-        raise NotImplementedError
+        # Valid input is checked once, in __post_init__. Only on failure are the
+        # edges checked again as given, so positions in messages match the input
+        # rather than the normalized, sorted edges.
+        raw = [list(e) if isinstance(e, (list, tuple)) else e for e in edges]
+        try:
+            normalized = tuple(sorted(normalize_edge(*e) for e in raw))
+            num_nodes = max(v for _, v in normalized) + 1 if normalized else 1
+            return cls(num_nodes, normalized, label=label, count=count)
+        except (TypeError, ValueError):
+            _raise_if_issues(check_edge_list(raw))
+            raise
 
     @classmethod
     def from_networkx(
@@ -116,22 +215,37 @@ class BallType:
         The renumbering is arbitrary (e.g. BFS order); identity up to
         isomorphism is step 2's job. Step 3 uses this for ball extraction.
         """
-        raise NotImplementedError
+        if graph.is_directed():
+            raise ValueError("graph must be undirected")
+        if root not in graph:
+            raise ValueError(f"root {root!r} is not in the graph")
+
+        order = [root] + [v for _, v in nx.bfs_edges(graph, root)]
+        if len(order) != graph.number_of_nodes():
+            # Checked here because isolated nodes have no edges for
+            # __post_init__ to catch; they would be dropped silently.
+            raise ValueError(
+                f"{graph.number_of_nodes() - len(order)} nodes not connected to the root"
+            )
+
+        index = {node: i for i, node in enumerate(order)}
+        edges = [(index[u], index[v]) for u, v in graph.edges()]
+        return cls.from_edges(edges, label=label, count=count)
 
     @property
     def depth(self) -> int:
         """Largest distance from the root. 0 for the single-node ball."""
-        raise NotImplementedError
+        return len(self.layers) - 1
 
     @property
     def root_degree(self) -> int:
         """Degree of node 0. Used later as a prefilter."""
-        raise NotImplementedError
+        return self.degrees[0]
 
     @property
     def layer_sizes(self) -> tuple[int, ...]:
         """Number of nodes at each distance. Part of the canonical key in step 2."""
-        raise NotImplementedError
+        return tuple(len(layer) for layer in self.layers)
 
     @property
     def structure_key(self) -> tuple[int, tuple[Edge, ...]]:
@@ -139,16 +253,30 @@ class BallType:
 
         Two types with equal keys are exact duplicates. Not an isomorphism key.
         """
-        raise NotImplementedError
+        return (self.num_nodes, self.edges)
 
     def distance(self, node: int) -> int:
         """Distance of ``node`` from the root, read from ``layers``."""
-        raise NotImplementedError
+        for d, layer in enumerate(self.layers):
+            if node in layer:
+                return d
+        raise ValueError(f"node {node!r} is not in this ball (nodes 0..{self.num_nodes - 1})")
 
     def to_networkx(self) -> nx.Graph:
         """A fresh NetworkX graph, with node attribute ``"depth"`` set on every node."""
-        raise NotImplementedError
+        graph = nx.Graph()
+        for d, layer in enumerate(self.layers):
+            graph.add_nodes_from(layer, depth=d)
+        graph.add_edges_from(self.edges)
+        return graph
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready dict: ``edges`` always, ``label`` and ``count`` only when set."""
-        raise NotImplementedError
+        # Key order matches the ruleset files: label first, then edges.
+        out: dict[str, Any] = {}
+        if self.label is not None:
+            out["label"] = self.label
+        out["edges"] = [list(e) for e in self.edges]
+        if self.count is not None:
+            out["count"] = self.count
+        return out
