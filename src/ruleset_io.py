@@ -1,4 +1,7 @@
-"""JSON reading and writing for rulesets. A thin layer: all checks live elsewhere.
+"""JSON reading, writing, and format validation for rulesets.
+
+JSON structure and field checks live here; graph invariants are delegated to
+``BallType`` and ``check_ruleset``.
 
 File format, version 1::
 
