@@ -1,6 +1,6 @@
 {
     "format": 1,
-    "name": "Unpronouncable",
+    "name": "Unpronounceable",
     "r": 2,
     "types": [
         {"label": "triangle", "edges": [[0, 1], [1, 2], [2, 0]]},
