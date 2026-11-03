@@ -9,7 +9,36 @@ The search finds finite graphs in which every node's radius-r neighborhood is on
 - Graphs are simple, undirected, unlabelled and connected.
 - Rulesets that only an infinite graph can satisfy are kept. For those, the result is a finite patch with a marked boundary.
 - No construction order is built in. The target is a declarative ensemble, sampled by a Markov chain.
-- Version 1 is a Python prototype on NetworkX and pynauty, for small n. Speed comes later, with a stated reason for each addition.
+- Version 1 is a Python front end on a Rust core. Python handles files, reports and drawing, and Rust does all graph work. Further speed-ups still need a stated reason.
+
+## Architecture
+
+Python is the front end and Rust is the core. They meet at one call that compiles a ruleset from r and its edge lists, and every check lives in exactly one of the two.
+
+| Layer | Language | Owns |
+| --- | --- | --- |
+| Ruleset files | Python | JSON format, reading and writing, the issue report |
+| Compiled ruleset | Rust | Every check on the ball graphs, canonical keys, duplicate merging, pruning |
+| Search | Rust | Graph state, ball extraction, embedding check, validity checker, sampler |
+| Analysis and drawing | Python | Results files, statistics, drawings of ball types and small graphs |
+| Test oracle | Python | A slow NetworkX checker for n up to about 10, run only in tests against Rust |
+
+**Boundary rule.** Python checks only what it takes to hand the data to Rust: required keys, value types, and that every edge is a pair of non-negative integers. Rust checks everything about the graphs themselves.
+
+**One report.** Compiling returns every issue, not just the first, using the same issue codes as Python's `IssueCode`. Python adds them to the load report. A test asserts that the two sets of codes match.
+
+**Packaging.** A Cargo workspace holds a core crate in plain Rust and a thin bindings crate built with PyO3 and maturin. Python imports the bindings as `ballsearch._core`. A command-line crate can be added later for long unattended runs.
+
+**Why Rust now.** Per-node work in a recheck was timed in each option: take the radius-2 ball, then fingerprint it. The graph was random 3-regular with 4,000 nodes, and all four gave identical output.
+
+| Implementation | µs per node |
+| --- | --- |
+| NetworkX (pure Python) | 13.2 |
+| igraph (C core) | 16.6 |
+| rustworkx (Rust core, called from Python) | 13.7 |
+| Plain Rust, flat adjacency arrays | 0.105 |
+
+Libraries with compiled cores do not help, because each call handles about 10 nodes, so crossing into compiled code costs more than the work. Moves in the chain depend on each other, so they cannot be batched.
 
 ## Definitions
 
@@ -61,6 +90,7 @@ A ruleset is a JSON file that stores the ball graphs themselves, with the root a
 
 ```json
 {
+  "format": 1,
   "name": "star-only",
   "r": 2,
   "types": [
@@ -77,12 +107,13 @@ Conventions:
 - A type's identity is its canonical form, not its label or position. This makes rulesets comparable and lets them be combined by union, intersection and difference.
 - Canonical keys are recomputed on load and never saved. They may not be stable across library versions.
 
-Checks on load:
+Checks on load, each in one place:
 
-- Each type is simple and connected, with every node within distance r of the root.
-- Depth is exactly r. Shallower types get a warning, since they only apply when n equals their size.
-- Isomorphic duplicates are merged, with a warning.
-- The sub-ball pruning runs and reports which types it removed and why. Both the list as written and the pruned list are kept.
+- **Python, reading the file:** required keys are present and no others, `format` is 1, values have the right JSON types, and every edge is a pair of non-negative integers.
+- **Rust, compiling:** each type has no self-loops or repeated edges, nodes numbered 0 to k − 1 with no gaps, is connected, and has every node within distance r of the root.
+- **Rust, compiling:** depth is exactly r. Shallower types get a warning, since they only apply when n equals their size.
+- **Rust, compiling:** exact and isomorphic duplicates are merged, with a warning.
+- **Rust, compiling:** the sub-ball pruning runs and reports which types it removed and why. Both the list as written and the pruned list are kept.
 
 Three ways to produce a ruleset, all writing this same format:
 
@@ -121,8 +152,8 @@ Step 4 is what makes the result exact. Ties come either from real symmetry, wher
 
 Implementations:
 
-- **Main path: pynauty.** Pass the ball with distance layers as vertex colors and take the canonical certificate. The key must also include the layer sizes, since a certificate alone does not record which colors were used.
-- **Cross-check: NetworkX only.** `weisfeiler_lehman_graph_hash` covers steps 1 to 3 without tie-breaking, so non-isomorphic balls can collide. Use it as a bucket key, then confirm with a VF2 isomorphism test that matches nodes on distance.
+- **Main path: Rust.** Implement steps 1 to 5 directly, or call nauty through C bindings with the distance layers as vertex colors and take its certificate. The key must also include the layer sizes, since a certificate alone does not record which colors were used.
+- **Cross-check: Python oracle, NetworkX only.** `weisfeiler_lehman_graph_hash` covers steps 1 to 3 without tie-breaking, so non-isomorphic balls can collide. Use it as a bucket key, then confirm with a VF2 isomorphism test that matches nodes on distance.
 - **Trees.** For a ball with no cycles, AHU encoding is exact: each node's code is the sorted tuple of its children's codes.
 
 The two implementations share no code. Agreement on thousands of random balls is the test.
@@ -151,7 +182,7 @@ A consequence: a shadow node's own degree is final, so it only matches types wit
 
 **How to run it.**
 
-- Both rules are pairwise tests between one visible node and one type node. They fit NetworkX's VF2 induced-subgraph matcher as a custom node-match function.
+- Both rules are pairwise tests between one visible node and one type node. In Rust they are the node test inside a small backtracking matcher, since balls are tiny. The Python oracle passes the same test to NetworkX's VF2 induced-subgraph matcher as a custom node-match function.
 - Prefilter types by root degree and layer sizes before matching.
 - Memoize lazily. The key is the canonical form of the visible ball colored by distance, open or closed, and window lower bound. The value is the compatible set.
 
@@ -219,7 +250,7 @@ In open mode, a third move swaps the flags of one random open node and one rando
 
 - Primary statistic: each unlabelled graph counted once. Weight every sample by its |Aut|.
 - Comparison statistic: the chain's native weighting.
-- Store |Aut| with every sample, from pynauty. With open sets, count only symmetries that preserve which nodes are open.
+- Store |Aut| with every sample, from the canonical-form code. With open sets, count only symmetries that preserve which nodes are open.
 - Reweighting works unless a few rare, very symmetric graphs dominate the count-once answer.
 
 **Caveats.**
@@ -242,10 +273,12 @@ Hand cases for the checker:
 Property tests:
 
 - Renumbering nodes at random never changes a verdict.
-- The pynauty canonical form and the NetworkX hash-plus-VF2 path agree on random balls.
+- The Rust canonical form and the Python NetworkX hash-plus-VF2 path agree on random balls.
 - On core nodes, the embedding check and the canonical lookup agree.
 - A ruleset extracted from a reference graph accepts that graph, and survives a save and reload unchanged.
 - **Cut test.** Take a known valid closed graph, cut out a random connected piece, and mark every node that lost a neighbor as open. The checker must accept. A rejection means the embedding rules are too strict, the most likely bug in the design.
+- On random small graphs and open sets, the Rust checker and the Python oracle checker give the same verdicts.
+- Rust's issue codes and Python's `IssueCode` are the same set, and every broken-file fixture produces its code through the full load and compile.
 - Once it exists, the incremental check agrees with the full check after every move.
 
 Sampler ground truth:
@@ -258,16 +291,17 @@ Sampler ground truth:
 
 Each step is testable before the next one exists, and steps 1 to 3 are already useful on their own.
 
-1. **Ruleset.** JSON loader, load-time checks, ball types with root 0.
-2. **Canonical form.** pynauty main path, NetworkX hash-plus-VF2 cross-check.
-3. **Ball extraction.** Visible r-ball of a node with distances, plus "all balls in a reference graph".
-4. **Pruning.** Visible sub-ball check on L, with a report.
-5. **Embedding check.** VF2 matcher with the distance-window and closed-degree rules, memoized.
-6. **Validity checker.** Classification, per-node check, report.
-7. **Enumeration baseline.** All valid graphs at very small n, for ground truth.
-8. **Sampler, version 1.** One chain, closed mode, full recheck.
+1. **Ruleset files, Python (built).** JSON loader and saver, format checks only, issue report, round trip. Structural checks move out to step 2.
+2. **Workspace and compiled ruleset, Rust.** Cargo workspace with core and PyO3 bindings crates, built by maturin. Compiling runs every graph check, returns all issues with Python's codes, and stores layers and degrees.
+3. **Canonical form, Rust.** Distance-colored refinement with tie-breaking, or nauty through C bindings. Compiling now merges isomorphic duplicates. Python oracle: NetworkX hash-plus-VF2.
+4. **Graph and ball extraction, Rust.** Flat adjacency arrays sized by the largest root degree in L. Visible r-ball of a node with distances, plus "all balls in a reference graph", exposed to Python.
+5. **Pruning, Rust.** Visible sub-ball check on L, with a report.
+6. **Embedding check, Rust.** Backtracking matcher with the distance-window and closed-degree rules, memoized.
+7. **Validity checker, Rust, plus the Python oracle checker.** Classification, per-node check, report. The oracle is a slow NetworkX version for n up to about 10, used only in tests.
+8. **Enumeration baseline.** All valid graphs at very small n, from NetworkX's graph atlas run through the Rust checker, for ground truth.
+9. **Sampler, version 1, Rust.** One chain, closed mode, full recheck. Samples go to a results file of edge list, open set, |Aut| and metadata, which Python reads for analysis and drawing.
 
-After step 3 a ruleset can be extracted from any graph and round-tripped through a file.
+After step 4 a ruleset can be extracted from any graph and round-tripped through a file.
 
 ## When to add complexity
 
@@ -277,12 +311,12 @@ Each addition waits for an observable symptom.
 | --- | --- |
 | The full recheck dominates runtime, expected past n of about 30 | Incremental energy: recheck only nodes within distance r of a changed edge |
 | Profiling shows canonical forms dominating the recheck | Cheap fingerprint first: reject on layer sizes and per-layer degrees, canonicalize only on a match |
-| Rechecks are still the bottleneck after fingerprints, or the Rust port begins | Incremental neighborhood hashes: reject a node from its level-r hash with no ball extraction |
+| Rechecks are still the bottleneck after fingerprints | Incremental neighborhood hashes: reject a node from its level-r hash with no ball extraction |
 | Nearly every proposed move is rejected | Degree-preserving edge swaps alongside add and remove |
 | Independent runs disagree, or the chain never reaches energy 0 on a ruleset known to be realizable | Parallel tempering: several copies at different β with swaps |
 | A ruleset has no closed solutions at reachable sizes | Open nodes: m above 0, the flag-swap move, and the m sweep |
 | Open-mode samples keep showing boundaries that cannot be extended | The pairwise agreement pass |
-| n beyond roughly 1,000 is needed | Validity-preserving local moves mined from L, and a Rust inner loop |
+| n beyond roughly 1,000 is needed | Validity-preserving local moves mined from L |
 
 **Fast rejection, in detail.** Most proposed moves produce invalid balls, so most checks should fail before any canonical form is computed. Neither method below changes correctness.
 
@@ -295,7 +329,7 @@ Each addition waits for an observable symptom.
 
 ## Scaling expectations and known limits
 
-The Python prototype should reach n of about 50 to 200 for sampling that can be trusted. These figures are estimates, not benchmarks, and the ruleset matters more than the language.
+A Python version would reach n of about 50 to 200 for sampling that can be trusted. The Rust core is about 125 times faster per node checked, measured, which should multiply reachable n by roughly 10 to 100, depending on how the spacing between independent samples grows with n. Apart from that measurement these figures are estimates, and the ruleset matters more than the language.
 
 Cost model at max degree 3 and r = 2:
 
@@ -306,7 +340,7 @@ Cost model at max degree 3 and r = 2:
 
 | Regime | What limits n | Expected reach |
 | --- | --- | --- |
-| Loose ruleset: many solutions, easy to move between | Compute | Python to about 1,000 for a few samples. A Rust inner loop should add two to three orders of magnitude |
+| Loose ruleset: many solutions, easy to move between | Compute | About 1,000 in Python for a few samples. The Rust core measured about 125 times faster per node checked |
 | Rigid ruleset: few solutions, far apart | Mixing, which can grow exponentially with n | Possibly a few dozen nodes in any language |
 | Unrealizable at this n and m | Nothing to find | Indistinguishable from "too slow" without enumeration at small n |
 

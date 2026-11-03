@@ -20,7 +20,7 @@ from ruleset_io import (
     save_ruleset,
 )
 
-# Each fixture file has one problem. Loading it must report this code.
+# Each fixture file has one format problem. Loading it in Python must report this code.
 FIXTURE_CODES = [
     ("malformed.json", IssueCode.MALFORMED_JSON),
     ("not_an_object.json", IssueCode.BAD_VALUE),
@@ -39,19 +39,27 @@ FIXTURE_CODES = [
     ("malformed_edge.json", IssueCode.MALFORMED_EDGE),
     ("bool_node.json", IssueCode.MALFORMED_EDGE),
     ("negative_node.json", IssueCode.NEGATIVE_NODE),
+]
+
+# These load in Python (report.ok) but must carry this warning.
+WARNING_FIXTURES = [
+    ("empty_types.json", IssueCode.EMPTY_RULESET),
+]
+
+# Graph problems: well-formed files, so Python loads them without issues, and
+# Rust's compile must report this code. Kept here so step 2 turns them into
+# end-to-end tests by filling in test_compile_fixture_reports.
+COMPILE_FIXTURES = [
     ("self_loop.json", IssueCode.SELF_LOOP),
     ("repeated_edge.json", IssueCode.REPEATED_EDGE),
     ("reversed_edge.json", IssueCode.REPEATED_EDGE),
     ("node_gap.json", IssueCode.NODE_GAP),
     ("disconnected.json", IssueCode.DISCONNECTED),
     ("beyond_radius.json", IssueCode.BEYOND_RADIUS),
-]
-
-# These load (report.ok) but must carry this warning.
-WARNING_FIXTURES = [
     ("shallow.json", IssueCode.SHALLOW_TYPE),
     ("exact_duplicate.json", IssueCode.EXACT_DUPLICATE),
-    ("empty_types.json", IssueCode.EMPTY_RULESET),
+    ("isomorphic_duplicate.json", IssueCode.ISOMORPHIC_DUPLICATE),
+    ("two_bad_types.json", IssueCode.SELF_LOOP),  # and NODE_GAP at index 2
 ]
 
 EXAMPLE_RULESETS = ["star-only.json", "path-ball-r2.json", "dimer-r1.json"]
@@ -76,12 +84,20 @@ def test_strict_raises(fixtures_dir, filename, code):
     assert code in excinfo.value.report.codes()
 
 
-def test_errors_collected_across_types(fixtures_dir):
-    """two_bad_types.json reports SELF_LOOP at index 0 and NODE_GAP at index 2."""
-    _, report = load_ruleset(fixtures_dir / "two_bad_types.json")
+def test_errors_collected_across_types():
+    """Format errors in two different types are both reported, each with its index."""
+    ok = {"edges": [[0, 1]]}
+    doc = {
+        "format": 1,
+        "name": "x",
+        "r": 1,
+        "types": [{"edges": [[0, 1], [1]]}, ok, {"edges": [[0, -1]]}],
+    }
+    ruleset, report = ruleset_from_dict(doc)
+    assert ruleset is None
     assert {(i.code, i.type_index) for i in report.errors} == {
-        (IssueCode.SELF_LOOP, 0),
-        (IssueCode.NODE_GAP, 2),
+        (IssueCode.MALFORMED_EDGE, 0),
+        (IssueCode.NEGATIVE_NODE, 2),
     }
 
 
@@ -96,18 +112,27 @@ def test_fixture_loads_with_warning(fixtures_dir, filename, code):
     assert code in report.codes()
 
 
-def test_shallow_type_is_kept(fixtures_dir):
-    """shallow.json keeps both types; shallow_indices() == (1,)."""
-    ruleset, _ = load_ruleset(fixtures_dir / "shallow.json")
-    assert len(ruleset) == 2
-    assert ruleset.shallow_indices() == (1,)
+# --- Graph problems: Python loads them, Rust rejects them ---------------------
+
+@pytest.mark.parametrize("filename, code", COMPILE_FIXTURES)
+def test_compile_fixture_loads_in_python(fixtures_dir, filename, code):
+    """Well-formed files load with no issues: the graph checks live in Rust."""
+    ruleset, report = load_ruleset(fixtures_dir / filename)
+    assert report.issues == []
+    assert ruleset is not None
 
 
-def test_exact_duplicates_are_kept_in_order(fixtures_dir):
-    """exact_duplicate.json keeps both types: merging waits for compilation."""
+@pytest.mark.skip(reason="needs step 2: Rust compile")
+@pytest.mark.parametrize("filename, code", COMPILE_FIXTURES)
+def test_compile_fixture_reports(fixtures_dir, filename, code):
+    """Loading then compiling reports code; errors give no compiled ruleset."""
+
+
+def test_types_kept_as_written(fixtures_dir):
+    """exact_duplicate.json keeps both types, in order and as written."""
     ruleset, _ = load_ruleset(fixtures_dir / "exact_duplicate.json")
     assert [t.label for t in ruleset] == ["a", "b"]
-    assert ruleset.types[0].structure_key == ruleset.types[1].structure_key
+    assert [t.edges for t in ruleset] == [((0, 1), (1, 2)), ((2, 1), (0, 1))]
 
 
 # --- Clean loads ----------------------------------------------------------------
@@ -121,13 +146,13 @@ def test_example_rulesets_load_cleanly(rulesets_dir, filename):
 
 
 def test_star_only_contents(rulesets_dir):
-    """name "star-only", r 2, one type labelled "leaf-view", layers ((0,), (1,), (2, 3))."""
+    """name "star-only", r 2, one type labelled "leaf-view" with the doc's edges."""
     ruleset, _ = load_ruleset(rulesets_dir / "star-only.json")
     assert ruleset.name == "star-only"
     assert ruleset.r == 2
     [ball] = ruleset.types
     assert ball.label == "leaf-view"
-    assert ball.layers == ((0,), (1,), (2, 3))
+    assert ball.edges == ((0, 1), (1, 2), (1, 3))
 
 
 # --- Round trip -----------------------------------------------------------------
@@ -179,32 +204,26 @@ def test_saved_file_has_no_canonical_keys(tmp_path):
 
 @st.composite
 def ball_types(draw):
-    """A connected rooted graph: a random tree on 0..n-1 plus a few extra edges."""
-    n = draw(st.integers(min_value=1, max_value=8))
-    edges = {(draw(st.integers(0, v - 1)), v) for v in range(1, n)}
-    if n >= 3:
-        pairs = st.tuples(st.integers(0, n - 1), st.integers(0, n - 1))
-        extra = draw(st.lists(pairs.filter(lambda p: p[0] != p[1]), max_size=4))
-        edges |= {tuple(sorted(p)) for p in extra}
+    """Any well-formed edge list: pairs of non-negative ints, in any order.
+
+    Graph validity does not matter here, since Python only checks the format.
+    """
+    node = st.integers(min_value=0, max_value=12)
+    edges = draw(st.lists(st.tuples(node, node), max_size=10))
     label = draw(st.none() | st.text(max_size=8))
     count = draw(st.none() | st.integers(min_value=0, max_value=1000))
-    return BallType.from_edges(sorted(edges), label=label, count=count)
+    return BallType.from_edges(edges, label=label, count=count)
 
 
-@given(types=st.lists(ball_types(), max_size=5), name=st.text(max_size=10))
-def test_round_trip_property(types, name):
-    """Hypothesis: random small connected rooted graphs, built in code, survive
-    ruleset_to_dict -> ruleset_from_dict unchanged."""
-    # r at least every depth, so nothing is BEYOND_RADIUS and the ruleset loads.
-    r = max([1] + [t.depth for t in types])
+@given(
+    types=st.lists(ball_types(), min_size=1, max_size=5),
+    name=st.text(max_size=10),
+    r=st.integers(min_value=1, max_value=5),
+)
+def test_round_trip_property(types, name, r):
+    """Hypothesis: well-formed rulesets built in code survive
+    ruleset_to_dict -> ruleset_from_dict unchanged, edges as written."""
     ruleset = Ruleset(name=name, r=r, types=tuple(types))
     reloaded, report = ruleset_from_dict(ruleset_to_dict(ruleset))
-    assert report.ok, str(report)
+    assert report.issues == [], str(report)
     assert reloaded == ruleset
-
-
-# --- Waiting on later steps -------------------------------------------------------
-
-@pytest.mark.skip(reason="needs step 2: canonical form")
-def test_isomorphic_duplicate_detected(fixtures_dir):
-    """isomorphic_duplicate.json: compiling gives ISOMORPHIC_DUPLICATE and one merged type."""

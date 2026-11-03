@@ -5,6 +5,10 @@
     "types": [
         {"label": "triangle", "edges": [[0, 1], [1, 2], [2, 0]]},
         {"label": "tree", "edges": [[0, 1], [0, 2], [1, 3], [1, 4], [2, 5], [2, 6]]},
-        {"label": "diamond", "edges": [[0, 1], [1, 2], [2, 3], [3, 0]]}
+        {"label": "diamond", "edges": [[0, 1], [1, 2], [2, 3], [3, 0]]},
+        {"label": "long_path", "edges": [[0, 1], [1, 2], [2, 3], [3, 4]]},
+        {"label": "disconnected", "edges": [[0, 1], [0, 2], [2, 3], [4, 5], [5, 6], [6, 4]]},
+        {"label": "disconnected_and_shallow", "edges": [[0, 1], [0, 2], [3, 4], [4, 5]]},
+        {"label": "rootless", "edges": [[1, 2], [2, 3], [2, 4]]}
     ]
 }

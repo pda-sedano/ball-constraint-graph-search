@@ -36,21 +36,26 @@ class IssueCode(Enum):
     BAD_VALUE = "bad_value"  # wrong JSON type or out-of-range value (r, label, count, ...)
     EMPTY_RULESET = "empty_ruleset"
 
-    # Single type, structural (checked by balltype.check_edge_list)
+    # Single type, edge format (Python: balltype.check_edge_format)
     MALFORMED_EDGE = "malformed_edge"  # not a pair of non-bool ints
     NEGATIVE_NODE = "negative_node"
+
+    # Everything below is reported by Rust when compiling. Rust's codes must
+    # use these same string values.
+
+    # Single type, graph structure
     SELF_LOOP = "self_loop"
     REPEATED_EDGE = "repeated_edge"  # includes [1, 0] after [0, 1]
     NODE_GAP = "node_gap"  # nodes are not exactly 0..k-1
     DISCONNECTED = "disconnected"
 
-    # Single type, relative to r (checked by ruleset.check_ruleset)
+    # Single type, relative to r
     BEYOND_RADIUS = "beyond_radius"
     SHALLOW_TYPE = "shallow_type"
 
     # Across types
     EXACT_DUPLICATE = "exact_duplicate"  # identical normalized edge lists
-    ISOMORPHIC_DUPLICATE = "isomorphic_duplicate"  # step 2, CompiledRuleset
+    ISOMORPHIC_DUPLICATE = "isomorphic_duplicate"
 
 
 SEVERITY: dict[IssueCode, Severity] = {
@@ -113,7 +118,7 @@ class LoadReport:
         self.issues.append(Issue(code, message, type_index))
 
     def extend(self, issues: list[Issue]) -> None:
-        """Append issues produced elsewhere, e.g. by ``check_edge_list``."""
+        """Append issues produced elsewhere, e.g. by ``check_edge_format`` or Rust's compile."""
         self.issues.extend(issues)
 
     @property

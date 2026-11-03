@@ -1,7 +1,9 @@
 """JSON reading, writing, and format validation for rulesets.
 
-JSON structure and field checks live here; graph invariants are delegated to
-``BallType`` and ``check_ruleset``.
+Only the format is checked here: JSON structure and field values, with edge
+format delegated to ``BallType``. Everything about the ball graphs is checked
+in Rust when the ruleset is compiled, so a ruleset that loads cleanly here can
+still fail compiling.
 
 File format, version 1::
 
@@ -148,7 +150,8 @@ def _parse_type(index: int, raw: Any, report: LoadReport) -> BallType | None:
 
     Reports MISSING_KEY / UNKNOWN_KEY for the entry's keys, BAD_VALUE for a
     non-str ``label`` or a ``count`` that is not a non-negative int, and
-    whatever ``from_edges`` rejects. Every issue carries ``type_index=index``.
+    whatever ``from_edges`` rejects (edge format only). Every issue carries
+    ``type_index=index``.
 
     Returns:
         The ``BallType`` if this entry produced no errors, else None.
@@ -157,7 +160,7 @@ def _parse_type(index: int, raw: Any, report: LoadReport) -> BallType | None:
         report.add(IssueCode.BAD_VALUE, f"type must be an object, got {type(raw).__name__}", index)
         return None
 
-    before = len(report.issues)
+    errors_before = len(report.errors)
     for key in sorted(TYPE_REQUIRED - raw.keys()):
         report.add(IssueCode.MISSING_KEY, f"missing required key {key!r}", index)
     for key in sorted(raw.keys() - TYPE_REQUIRED - TYPE_OPTIONAL):
@@ -181,8 +184,7 @@ def _parse_type(index: int, raw: Any, report: LoadReport) -> BallType | None:
         except InvalidBallError as exc:
             report.extend([replace(issue, type_index=index) for issue in exc.issues])
 
-    # Every issue raised here is an error, so any new issue means no ball.
-    if len(report.issues) > before:
+    if len(report.errors) > errors_before:
         return None
     return ball
 
