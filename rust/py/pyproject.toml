@@ -1,0 +1,20 @@
+# The Rust extension, as its own Python package. Build it into the active venv
+# from the repository root with:
+#
+#     maturin develop -m rust/py/Cargo.toml
+#
+# Add --release once speed matters. See rust/README.md.
+
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "graph-search-rs"
+description = "Rust core of graph-search: compiled rulesets and search"
+requires-python = ">=3.10"
+dynamic = ["version"]
+
+[tool.maturin]
+module-name = "graph_search_rs"
+features = ["pyo3/extension-module"]

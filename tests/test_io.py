@@ -5,7 +5,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from balltype import BallType
-from report import IssueCode, RulesetError
+from report import SEVERITY, IssueCode, RulesetError, Severity
 from ruleset import Ruleset
 from ruleset_io import (
     TOP_LEVEL_OPTIONAL,
@@ -39,6 +39,7 @@ FIXTURE_CODES = [
     ("malformed_edge.json", IssueCode.MALFORMED_EDGE),
     ("bool_node.json", IssueCode.MALFORMED_EDGE),
     ("negative_node.json", IssueCode.NEGATIVE_NODE),
+    ("node_too_large.json", IssueCode.NODE_TOO_LARGE),
 ]
 
 # These load in Python (report.ok) but must carry this warning.
@@ -47,14 +48,15 @@ WARNING_FIXTURES = [
 ]
 
 # Graph problems: well-formed files, so Python loads them without issues, and
-# Rust's compile must report this code. Kept here so step 2 turns them into
-# end-to-end tests by filling in test_compile_fixture_reports.
+# Rust's compile must report this code. rust/core/tests/fixtures.rs has the same table.
 COMPILE_FIXTURES = [
     ("self_loop.json", IssueCode.SELF_LOOP),
     ("repeated_edge.json", IssueCode.REPEATED_EDGE),
     ("reversed_edge.json", IssueCode.REPEATED_EDGE),
     ("node_gap.json", IssueCode.NODE_GAP),
     ("disconnected.json", IssueCode.DISCONNECTED),
+    ("rootless.json", IssueCode.NODE_GAP),  # no node 0: a gap...
+    ("rootless.json", IssueCode.DISCONNECTED),  # ...and nothing reachable
     ("beyond_radius.json", IssueCode.BEYOND_RADIUS),
     ("shallow.json", IssueCode.SHALLOW_TYPE),
     ("exact_duplicate.json", IssueCode.EXACT_DUPLICATE),
@@ -122,10 +124,18 @@ def test_compile_fixture_loads_in_python(fixtures_dir, filename, code):
     assert ruleset is not None
 
 
-@pytest.mark.skip(reason="needs step 2: Rust compile")
 @pytest.mark.parametrize("filename, code", COMPILE_FIXTURES)
 def test_compile_fixture_reports(fixtures_dir, filename, code):
     """Loading then compiling reports code; errors give no compiled ruleset."""
+    pytest.importorskip("graph_search_rs")
+    if code is IssueCode.ISOMORPHIC_DUPLICATE:
+        pytest.skip("needs step 3: canonical form")
+    from compiled import load_and_compile
+
+    compiled, report = load_and_compile(fixtures_dir / filename)
+    assert code in report.codes()
+    if SEVERITY[code] is Severity.ERROR:
+        assert compiled is None
 
 
 def test_types_kept_as_written(fixtures_dir):

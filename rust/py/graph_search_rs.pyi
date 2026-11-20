@@ -1,0 +1,26 @@
+"""Type stub for the Rust extension. Keep in step with rust/py/src/lib.rs."""
+
+class CompiledRuleset:
+    """A compiled ruleset, read-only. Ball indices count distinct types after merging duplicates."""
+
+    @property
+    def r(self) -> int: ...
+    @property
+    def source_indices(self) -> list[int]:
+        """Position in the file of each distinct ball type."""
+    @property
+    def max_root_degree(self) -> int: ...
+    def __len__(self) -> int: ...
+    def shallow_indices(self) -> list[int]: ...
+    def layers(self, index: int) -> list[list[int]]: ...
+    def degrees(self, index: int) -> list[int]: ...
+    def depth(self, index: int) -> int: ...
+    def edges(self, index: int) -> list[tuple[int, int]]: ...
+
+def compile_ruleset(
+    r: int, types: list[list[tuple[int, int]]]
+) -> tuple[CompiledRuleset | None, list[tuple[str, str, int | None]]]:
+    """Compile from r and each type's edges as written. Raises ValueError if r is 0."""
+
+def issue_codes() -> list[tuple[str, str]]:
+    """Every code compiling can report, as (code, severity) pairs."""

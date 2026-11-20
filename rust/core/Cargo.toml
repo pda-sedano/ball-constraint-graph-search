@@ -1,0 +1,15 @@
+[package]
+name = "graph-search-core"
+description = "Compiled rulesets and graph search for radius-r ball constraints"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "graph_search_core"
+
+[dependencies]
+
+[dev-dependencies]
+# Only for reading the shared JSON fixtures in tests/fixtures.rs.
+serde_json = "1"

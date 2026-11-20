@@ -1,0 +1,80 @@
+//! A compiled ruleset: radius r plus the ball types that survived compiling.
+
+use crate::ball::CompiledBall;
+
+/// The ball types of a ruleset with no compile errors, duplicates merged.
+///
+/// Each kept ball remembers its position in the ruleset as written, so
+/// anything reported later (pruning, sampling statistics) can point back at
+/// the file. Step 4 adds the pruned list beside this one; step 3 adds
+/// canonical keys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledRuleset {
+    r: u32,
+    /// Distinct ball types, in order of first appearance.
+    balls: Vec<CompiledBall>,
+    /// `source_indices[i]` is the position in the file of `balls[i]`.
+    source_indices: Vec<usize>,
+}
+
+impl CompiledRuleset {
+    /// Only `compile` builds these. Panics if the two vectors differ in length.
+    pub(crate) fn new(r: u32, balls: Vec<CompiledBall>, source_indices: Vec<usize>) -> Self {
+        assert_eq!(
+            balls.len(),
+            source_indices.len(),
+            "every ball needs exactly one source index"
+        );
+        Self {
+            r,
+            balls,
+            source_indices,
+        }
+    }
+
+    pub fn r(&self) -> u32 {
+        self.r
+    }
+
+    /// Number of distinct ball types.
+    pub fn len(&self) -> usize {
+        self.balls.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.balls.is_empty()
+    }
+
+    pub fn balls(&self) -> &[CompiledBall] {
+        &self.balls
+    }
+
+    pub fn ball(&self, i: usize) -> Option<&CompiledBall> {
+        self.balls.get(i)
+    }
+
+    pub fn source_indices(&self) -> &[usize] {
+        &self.source_indices
+    }
+
+    /// Indices (into `balls`) of types with depth less than r. They are kept:
+    /// one applies only when n equals its size, known only at search time.
+    pub fn shallow_indices(&self) -> Vec<usize> {
+        self.balls
+            .iter()
+            .enumerate()
+            .filter(|(_, ball)| (ball.depth() as u64) < u64::from(self.r))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Largest root degree over all types: the sampler's hard degree cap.
+    /// 0 for an empty ruleset.
+    pub fn max_root_degree(&self) -> usize {
+        self.balls
+            .iter()
+            .map(CompiledBall::root_degree)
+            .max()
+            .unwrap_or(0)
+    }
+}

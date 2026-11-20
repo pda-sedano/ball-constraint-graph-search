@@ -1,0 +1,17 @@
+[package]
+name = "graph-search-py"
+description = "Python bindings for graph-search-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+# The Python module name; must match `module-name` in pyproject.toml.
+name = "graph_search_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+graph-search-core = { path = "../core" }
+# "extension-module" is turned on by maturin (pyproject.toml), not here, so
+# `cargo test` and `cargo check` still link.
+pyo3 = "0.30"

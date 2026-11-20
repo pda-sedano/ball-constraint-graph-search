@@ -1,6 +1,6 @@
 import pytest
 
-from balltype import BallType, InvalidBallError, check_edge_format
+from balltype import MAX_NODE, BallType, InvalidBallError, check_edge_format
 from report import IssueCode
 
 STAR = [[0, 1], [1, 2], [1, 3]]
@@ -11,6 +11,7 @@ BAD_EDGE_FORMATS = [
     ([[0, 1], [1, 2.0]], IssueCode.MALFORMED_EDGE),
     ([[0, 1], [1, True]], IssueCode.MALFORMED_EDGE),
     ([[0, 1], [1, -2]], IssueCode.NEGATIVE_NODE),
+    ([[0, 1], [1, MAX_NODE + 1]], IssueCode.NODE_TOO_LARGE),
 ]
 
 # Well-formed edge lists with graph problems. Python accepts them; Rust's
@@ -39,6 +40,11 @@ def test_check_edge_format_reports_all_problems():
     assert {IssueCode.MALFORMED_EDGE, IssueCode.NEGATIVE_NODE} <= codes
 
 
+def test_negative_and_too_large_in_one_edge_both_reported():
+    codes = [issue.code for issue in check_edge_format([[-1, MAX_NODE + 1]])]
+    assert codes == [IssueCode.NEGATIVE_NODE, IssueCode.NODE_TOO_LARGE]
+
+
 def test_check_edge_format_tags_type_index():
     """Every returned issue carries the type_index passed in."""
     issues = check_edge_format([[0, 1], [1], [1, -2]], type_index=5)
@@ -46,9 +52,10 @@ def test_check_edge_format_tags_type_index():
     assert all(issue.type_index == 5 for issue in issues)
 
 
-@pytest.mark.parametrize("raw", [[], [[0, 1]], STAR, ((0, 1), (1, 2))])
+@pytest.mark.parametrize("raw", [[], [[0, 1]], STAR, ((0, 1), (1, 2)), [[0, MAX_NODE]]])
 def test_check_edge_format_accepts_valid(raw):
-    """Valid lists, including the empty one (single-node ball) and tuples, give no issues."""
+    """Valid lists, including the empty one (single-node ball), tuples and the largest
+    node id, give no issues."""
     assert check_edge_format(raw) == []
 
 

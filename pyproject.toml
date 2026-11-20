@@ -13,12 +13,12 @@ dependencies = [
 
 [project.optional-dependencies]
 draw = ["matplotlib>=3.7"]
-dev = ["pytest>=8", "hypothesis>=6"]
-# Step 2 adds: canonical = ["pynauty>=2.8"]
+dev = ["pytest>=8", "hypothesis>=6", "maturin>=1.5,<2"]
+# The Rust extension (graph_search_rs) is built separately: see rust/README.md.
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["balltype", "draw", "report", "ruleset", "ruleset_io"]
+py-modules = ["balltype", "compiled", "draw", "report", "ruleset", "ruleset_io"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

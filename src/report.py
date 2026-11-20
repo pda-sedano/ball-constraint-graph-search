@@ -39,6 +39,7 @@ class IssueCode(Enum):
     # Single type, edge format (Python: balltype.check_edge_format)
     MALFORMED_EDGE = "malformed_edge"  # not a pair of non-bool ints
     NEGATIVE_NODE = "negative_node"
+    NODE_TOO_LARGE = "node_too_large"  # above balltype.MAX_NODE, Rust's u32 limit
 
     # Everything below is reported by Rust when compiling. Rust's codes must
     # use these same string values.
@@ -46,8 +47,8 @@ class IssueCode(Enum):
     # Single type, graph structure
     SELF_LOOP = "self_loop"
     REPEATED_EDGE = "repeated_edge"  # includes [1, 0] after [0, 1]
-    NODE_GAP = "node_gap"  # nodes are not exactly 0..k-1
-    DISCONNECTED = "disconnected"
+    NODE_GAP = "node_gap"  # nodes are not exactly 0..k-1, including a missing root
+    DISCONNECTED = "disconnected"  # some node unreachable from the root; all, if no node 0
 
     # Single type, relative to r
     BEYOND_RADIUS = "beyond_radius"
@@ -67,6 +68,7 @@ SEVERITY: dict[IssueCode, Severity] = {
     IssueCode.EMPTY_RULESET: Severity.WARNING,
     IssueCode.MALFORMED_EDGE: Severity.ERROR,
     IssueCode.NEGATIVE_NODE: Severity.ERROR,
+    IssueCode.NODE_TOO_LARGE: Severity.ERROR,
     IssueCode.SELF_LOOP: Severity.ERROR,
     IssueCode.REPEATED_EDGE: Severity.ERROR,
     IssueCode.NODE_GAP: Severity.ERROR,
@@ -76,6 +78,19 @@ SEVERITY: dict[IssueCode, Severity] = {
     IssueCode.EXACT_DUPLICATE: Severity.WARNING,
     IssueCode.ISOMORPHIC_DUPLICATE: Severity.WARNING,
 }
+
+# The codes Rust reports when compiling: exactly those in rust/core/src/issue.rs.
+# tests/test_compiled.py checks this against the extension's issue_codes().
+COMPILE_CODES: frozenset[IssueCode] = frozenset({
+    IssueCode.SELF_LOOP,
+    IssueCode.REPEATED_EDGE,
+    IssueCode.NODE_GAP,
+    IssueCode.DISCONNECTED,
+    IssueCode.BEYOND_RADIUS,
+    IssueCode.SHALLOW_TYPE,
+    IssueCode.EXACT_DUPLICATE,
+    IssueCode.ISOMORPHIC_DUPLICATE,
+})
 
 
 @dataclass(frozen=True)

@@ -1,7 +1,7 @@
 """One ball type as written in a ruleset file: an edge list, plus an optional label and count.
 
 Python checks only what it takes to hand a ball type to Rust: the edge list is a
-list of pairs of non-negative integers. Everything about the graph itself
+list of pairs of integers from 0 to ``MAX_NODE``. Everything about the graph itself
 (self-loops, repeated edges, node numbering, connectivity, depth against r,
 duplicates) is checked in Rust when the ruleset is compiled. Rust also computes
 layers and degrees.
@@ -22,6 +22,9 @@ from report import Issue, IssueCode
 
 Edge = tuple[int, int]
 
+# Largest node id Rust accepts: its Node type is u32 (rust/core/src/ball.rs).
+MAX_NODE = 2**32 - 1
+
 
 def check_edge_format(raw_edges: Any, type_index: int | None = None) -> list[Issue]:
     """Format checks on an edge list, as it came out of JSON or from code.
@@ -31,6 +34,8 @@ def check_edge_format(raw_edges: Any, type_index: int | None = None) -> list[Iss
     - ``raw_edges`` is a list or tuple (else BAD_VALUE, and stop).
     - Each entry is a 2-element list or tuple of ints, rejecting bools (MALFORMED_EDGE).
     - No negative nodes (NEGATIVE_NODE).
+    - No node above ``MAX_NODE`` (NODE_TOO_LARGE), which would not fit Rust's
+      node type. An edge can get both this and NEGATIVE_NODE.
 
     Graph structure is not checked here; that happens in Rust on compiling.
 
@@ -57,8 +62,14 @@ def check_edge_format(raw_edges: Any, type_index: int | None = None) -> list[Iss
             and all(isinstance(x, int) and not isinstance(x, bool) for x in entry)
         ):
             report(IssueCode.MALFORMED_EDGE, f"edge {i} is not a pair of ints: {entry!r}")
-        elif entry[0] < 0 or entry[1] < 0:
+            continue
+        if entry[0] < 0 or entry[1] < 0:
             report(IssueCode.NEGATIVE_NODE, f"edge {i} has a negative node: {list(entry)!r}")
+        if entry[0] > MAX_NODE or entry[1] > MAX_NODE:
+            report(
+                IssueCode.NODE_TOO_LARGE,
+                f"edge {i} has a node above {MAX_NODE}: {list(entry)!r}",
+            )
 
     return issues
 
