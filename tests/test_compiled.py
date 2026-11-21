@@ -8,7 +8,7 @@ import pytest
 graph_search_rs = pytest.importorskip("graph_search_rs")
 
 from balltype import BallType  # noqa: E402
-from compiled import compile_ruleset, load_and_compile, to_issue  # noqa: E402
+from compiled import canonical_key, compile_ruleset, load_and_compile, to_issue  # noqa: E402
 from report import (  # noqa: E402
     COMPILE_CODES,
     SEVERITY,
@@ -89,10 +89,53 @@ def test_shallow_types_kept_and_listed(fixtures_dir):
     assert compiled.shallow_indices() == [1]
 
 
+def test_isomorphic_duplicates_merged(fixtures_dir):
+    compiled, report = load_and_compile(fixtures_dir / "isomorphic_duplicate.json")
+    assert issue_pairs(report) == [(IssueCode.ISOMORPHIC_DUPLICATE, 1)]
+    assert len(compiled) == 1
+    assert compiled.source_indices == [0]
+
+
 def test_index_out_of_range_raises(rulesets_dir):
     compiled, _ = load_and_compile(rulesets_dir / "star-only.json")
     with pytest.raises(IndexError):
         compiled.layers(len(compiled))
+
+
+# --- Canonical keys and lookup ---------------------------------------------------
+
+STAR = [(0, 1), (1, 2), (1, 3)]
+STAR_RELABELED = [(3, 2), (0, 2), (2, 1)]  # same shape, center numbered 2
+
+
+def test_canonical_key_is_hashable_and_relabeling_invariant():
+    key = canonical_key(BallType.from_edges(STAR))
+    assert {key: "star"}[canonical_key(BallType.from_edges(STAR_RELABELED))] == "star"
+    assert key[0] == (1, 1, 2)  # layer sizes
+
+
+def test_canonical_key_depends_on_the_root():
+    rooted_at_end = canonical_key(BallType.from_edges([(0, 1), (1, 2)]))
+    rooted_in_middle = canonical_key(BallType.from_edges([(0, 1), (0, 2)]))
+    assert rooted_at_end != rooted_in_middle
+
+
+def test_canonical_key_rejects_invalid_ball():
+    with pytest.raises(ValueError, match="node_gap"):
+        canonical_key(BallType.from_edges([(1, 2)]))
+
+
+def test_compiled_key_matches_module_key(rulesets_dir):
+    compiled, _ = load_and_compile(rulesets_dir / "path-ball-r2.json")
+    assert compiled.canonical_key(0) == graph_search_rs.canonical_key(compiled.edges(0))
+
+
+def test_index_of_finds_isomorphic_type(rulesets_dir):
+    compiled, _ = load_and_compile(rulesets_dir / "star-only.json")
+    assert compiled.index_of(STAR_RELABELED) == 0
+    assert compiled.index_of([(0, 1), (1, 2), (2, 0)]) is None
+    with pytest.raises(ValueError):
+        compiled.index_of([(0, 0)])
 
 
 # --- The bridge's own behaviour -------------------------------------------------

@@ -5,9 +5,12 @@
 //! cross as plain `(code, message, type_index)` tuples; `src/compiled.py`
 //! turns them into Python `Issue` objects.
 
-use graph_search_core::{compile, CompiledBall, CompiledRuleset, Edge, Issue, IssueCode};
+use graph_search_core::{
+    compile, CanonicalKey, CompiledBall, CompiledRuleset, Edge, Issue, IssueCode,
+};
 use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyTuple;
 
 /// One issue as Python receives it: (code, message, type_index).
 type PyIssue = (&'static str, String, Option<usize>);
@@ -87,6 +90,39 @@ impl PyCompiledRuleset {
     fn edges(&self, index: usize) -> PyResult<Vec<Edge>> {
         Ok(self.ball(index)?.edges().to_vec())
     }
+
+    /// Canonical key of ball `index`, as `canonical_key` returns it.
+    fn canonical_key<'py>(&self, py: Python<'py>, index: usize) -> PyResult<Bound<'py, PyTuple>> {
+        key_to_py(py, self.ball(index)?.canonical_key())
+    }
+
+    /// Index of the ball type isomorphic to the ball with these edges, or
+    /// None. Raises ValueError if the edges are not a valid ball.
+    fn index_of(&self, edges: Vec<Edge>) -> PyResult<Option<usize>> {
+        Ok(self
+            .inner
+            .index_of(ball_from_edges(&edges)?.canonical_key()))
+    }
+}
+
+/// A canonical key as Python sees it: `(layer_sizes, edges)`, all tuples, so
+/// it is hashable and can key a dict.
+fn key_to_py<'py>(py: Python<'py>, key: &CanonicalKey) -> PyResult<Bound<'py, PyTuple>> {
+    let layer_sizes = PyTuple::new(py, key.layer_sizes().iter().copied())?;
+    let edges = PyTuple::new(py, key.edges().iter().copied())?;
+    PyTuple::new(py, [layer_sizes.into_any(), edges.into_any()])
+}
+
+/// Build a ball from edges as written, or raise ValueError listing every
+/// structural problem.
+fn ball_from_edges(edges: &[Edge]) -> PyResult<CompiledBall> {
+    CompiledBall::from_edges(edges).map_err(|issues| {
+        let details: Vec<String> = issues
+            .iter()
+            .map(|issue| format!("{}: {}", issue.code.as_str(), issue.message))
+            .collect();
+        PyValueError::new_err(format!("invalid ball: {}", details.join("; ")))
+    })
 }
 
 /// Convert one Rust issue to the tuple Python receives.
@@ -117,6 +153,14 @@ fn compile_ruleset(
     ))
 }
 
+/// Canonical key of the ball with these edges, as written: equal keys mean
+/// isomorphic balls, root to root. Returns `(layer_sizes, edges)` as nested
+/// tuples. Raises ValueError if the edges are not a valid ball.
+#[pyfunction]
+fn canonical_key<'py>(py: Python<'py>, edges: Vec<Edge>) -> PyResult<Bound<'py, PyTuple>> {
+    key_to_py(py, ball_from_edges(&edges)?.canonical_key())
+}
+
 /// Every code compiling can report, with its severity: `(code, severity)` pairs.
 /// Python's tests compare these with `report.COMPILE_CODES` and `report.SEVERITY`.
 #[pyfunction]
@@ -131,6 +175,7 @@ fn issue_codes() -> Vec<(&'static str, &'static str)> {
 fn graph_search_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCompiledRuleset>()?;
     m.add_function(wrap_pyfunction!(compile_ruleset, m)?)?;
+    m.add_function(wrap_pyfunction!(canonical_key, m)?)?;
     m.add_function(wrap_pyfunction!(issue_codes, m)?)?;
     Ok(())
 }

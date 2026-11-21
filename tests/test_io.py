@@ -128,8 +128,6 @@ def test_compile_fixture_loads_in_python(fixtures_dir, filename, code):
 def test_compile_fixture_reports(fixtures_dir, filename, code):
     """Loading then compiling reports code; errors give no compiled ruleset."""
     pytest.importorskip("graph_search_rs")
-    if code is IssueCode.ISOMORPHIC_DUPLICATE:
-        pytest.skip("needs step 3: canonical form")
     from compiled import load_and_compile
 
     compiled, report = load_and_compile(fixtures_dir / filename)

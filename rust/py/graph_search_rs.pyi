@@ -1,5 +1,8 @@
 """Type stub for the Rust extension. Keep in step with rust/py/src/lib.rs."""
 
+CanonicalKey = tuple[tuple[int, ...], tuple[tuple[int, int], ...]]
+"""(layer_sizes, edges): equal keys mean isomorphic balls, root to root. Hashable."""
+
 class CompiledRuleset:
     """A compiled ruleset, read-only. Ball indices count distinct types after merging duplicates."""
 
@@ -16,11 +19,17 @@ class CompiledRuleset:
     def degrees(self, index: int) -> list[int]: ...
     def depth(self, index: int) -> int: ...
     def edges(self, index: int) -> list[tuple[int, int]]: ...
+    def canonical_key(self, index: int) -> CanonicalKey: ...
+    def index_of(self, edges: list[tuple[int, int]]) -> int | None:
+        """Index of the type isomorphic to this ball, or None. ValueError if not a valid ball."""
 
 def compile_ruleset(
     r: int, types: list[list[tuple[int, int]]]
 ) -> tuple[CompiledRuleset | None, list[tuple[str, str, int | None]]]:
     """Compile from r and each type's edges as written. Raises ValueError if r is 0."""
+
+def canonical_key(edges: list[tuple[int, int]]) -> CanonicalKey:
+    """Canonical key of the ball with these edges. ValueError if not a valid ball."""
 
 def issue_codes() -> list[tuple[str, str]]:
     """Every code compiling can report, as (code, severity) pairs."""

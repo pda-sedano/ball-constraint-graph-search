@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::ball::{check_structure, CompiledBall, Edge};
+use crate::canonical::CanonicalKey;
 use crate::issue::{Issue, IssueCode};
 use crate::ruleset::CompiledRuleset;
 
@@ -29,7 +30,7 @@ impl CompileOutcome {
 ///      `CompiledBall`s; the rest are left out of later steps, so one bad
 ///      type does not hide problems in the others.
 ///   2. For each compiled ball, `check_radius`.
-///   3. Across compiled balls, `merge_exact_duplicates`.
+///   3. Across compiled balls, `merge_duplicates`.
 ///   4. If any issue is an error, `ruleset` is None. Otherwise build the
 ///      `CompiledRuleset` from the merged balls and their source indices.
 ///
@@ -60,7 +61,7 @@ pub fn compile(r: u32, types: &[Vec<Edge>]) -> CompileOutcome {
             .filter_map(|(index, ball)| check_radius(r, *index, ball)),
     );
 
-    let (kept, duplicate_issues) = merge_exact_duplicates(compiled);
+    let (kept, duplicate_issues) = merge_duplicates(compiled);
     issues.extend(duplicate_issues);
 
     let ruleset = if issues.iter().any(Issue::is_error) {
@@ -97,27 +98,36 @@ fn check_radius(r: u32, type_index: usize, ball: &CompiledBall) -> Option<Issue>
     }
 }
 
-/// Keep the first of each group of balls with identical normalized edges.
+/// Keep the first of each group of isomorphic balls (equal canonical keys).
 ///
 /// `balls` pairs each compiled ball with its position in the file, in file
-/// order. Returns the kept pairs in the same order, plus one
-/// `ExactDuplicate` warning per dropped copy, at the copy's index and naming
-/// the index it duplicates.
-fn merge_exact_duplicates(
-    balls: Vec<(usize, CompiledBall)>,
-) -> (Vec<(usize, CompiledBall)>, Vec<Issue>) {
-    let mut first_index: HashMap<Vec<Edge>, usize> = HashMap::new();
-    let mut kept = Vec::new();
+/// order. Returns the kept pairs in the same order, plus one warning per
+/// dropped copy, at the copy's index and naming the index it duplicates:
+/// `ExactDuplicate` when the normalized edges are identical too,
+/// `IsomorphicDuplicate` when only the shape is.
+fn merge_duplicates(balls: Vec<(usize, CompiledBall)>) -> (Vec<(usize, CompiledBall)>, Vec<Issue>) {
+    let mut position_of: HashMap<CanonicalKey, usize> = HashMap::new();
+    let mut kept: Vec<(usize, CompiledBall)> = Vec::new();
     let mut issues = Vec::new();
     for (index, ball) in balls {
-        if let Some(&first) = first_index.get(ball.edges()) {
-            issues.push(Issue::new(
-                IssueCode::ExactDuplicate,
-                format!("same edges as type {first}; merged into it"),
-                Some(index),
-            ));
+        if let Some(&position) = position_of.get(ball.canonical_key()) {
+            let (first, first_ball) = &kept[position];
+            let issue = if first_ball.edges() == ball.edges() {
+                Issue::new(
+                    IssueCode::ExactDuplicate,
+                    format!("same edges as type {first}; merged into it"),
+                    Some(index),
+                )
+            } else {
+                Issue::new(
+                    IssueCode::IsomorphicDuplicate,
+                    format!("isomorphic to type {first}; merged into it"),
+                    Some(index),
+                )
+            };
+            issues.push(issue);
         } else {
-            first_index.insert(ball.edges().to_vec(), index);
+            position_of.insert(ball.canonical_key().clone(), kept.len());
             kept.push((index, ball));
         }
     }
@@ -186,6 +196,35 @@ mod tests {
         let ruleset = outcome.ruleset.expect("warnings only");
         assert_eq!(ruleset.len(), 1);
         assert_eq!(ruleset.source_indices(), [0]);
+    }
+
+    #[test]
+    fn isomorphic_duplicates_merged_keeping_first() {
+        //! The star drawn with a different center number is the same shape.
+        let relabeled: &[Edge] = &[(0, 2), (2, 1), (2, 3)];
+        let outcome = compile(2, &types(&[STAR, relabeled, STAR]));
+        assert_eq!(
+            found(&outcome),
+            [
+                (IssueCode::IsomorphicDuplicate, Some(1)),
+                (IssueCode::ExactDuplicate, Some(2)),
+            ]
+        );
+        let ruleset = outcome.ruleset.expect("warnings only");
+        assert_eq!(ruleset.len(), 1);
+        assert_eq!(ruleset.source_indices(), [0]);
+    }
+
+    #[test]
+    fn index_of_finds_any_isomorphic_copy() {
+        let path_ball: &[Edge] = &[(0, 1), (0, 2), (1, 3), (2, 4)];
+        let ruleset = compile(2, &types(&[STAR, path_ball]))
+            .ruleset
+            .expect("clean");
+        let relabeled = CompiledBall::from_checked_edges(&[(0, 3), (3, 4), (0, 1), (1, 2)]);
+        assert_eq!(ruleset.index_of(relabeled.canonical_key()), Some(1));
+        let other = CompiledBall::from_checked_edges(&[(0, 1), (1, 2), (2, 0)]);
+        assert_eq!(ruleset.index_of(other.canonical_key()), None);
     }
 
     #[test]

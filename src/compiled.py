@@ -9,6 +9,7 @@ Typical use::
     compiled, report = load_and_compile("rulesets/star-only.json")
     if compiled is not None:
         compiled.layers(0)
+        compiled.index_of([(0, 2), (2, 1), (2, 3)])  # 0: same shape as type 0
 """
 
 from __future__ import annotations
@@ -16,12 +17,13 @@ from __future__ import annotations
 from os import PathLike
 from typing import TYPE_CHECKING
 
+from balltype import BallType
 from report import Issue, IssueCode, LoadReport
 from ruleset import Ruleset
 from ruleset_io import load_ruleset
 
 if TYPE_CHECKING:
-    from graph_search_rs import CompiledRuleset
+    from graph_search_rs import CanonicalKey, CompiledRuleset
 
 RawIssue = tuple[str, str, int | None]
 
@@ -78,6 +80,18 @@ def load_and_compile(
     if ruleset is None:
         return None, report
     return compile_ruleset(ruleset, report, strict=strict)
+
+
+def canonical_key(ball: BallType) -> CanonicalKey:
+    """Canonical key of one ball type: equal keys mean isomorphic, root to root.
+
+    A hashable ``(layer_sizes, edges)`` tuple. Raises ValueError if the edges
+    are not a valid ball (the message lists every structural problem). Keys
+    are not stable across versions of the Rust code, so never save them.
+    """
+    import graph_search_rs
+
+    return graph_search_rs.canonical_key(list(ball.edges))
 
 
 def to_issue(raw: RawIssue) -> Issue:

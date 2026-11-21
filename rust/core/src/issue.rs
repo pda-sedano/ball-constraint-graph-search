@@ -42,8 +42,7 @@ pub enum IssueCode {
     // Across types (compile)
     /// Identical normalized edge lists.
     ExactDuplicate,
-    /// Same ball up to root-preserving isomorphism. Reserved for step 3
-    /// (canonical form); not emitted yet.
+    /// Same ball up to root-preserving isomorphism, edges written differently.
     IsomorphicDuplicate,
 }
 

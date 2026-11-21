@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
+use crate::canonical::{canonical_form, CanonicalForm, CanonicalKey};
 use crate::issue::{Issue, IssueCode};
 
 /// A node id. Balls are small, so 32 bits is plenty.
@@ -171,14 +172,17 @@ pub struct CompiledBall {
     layers: Vec<Vec<Node>>,
     /// Normalized `(min, max)` edges, sorted. Equal lists mean exact duplicates.
     edges: Vec<Edge>,
+    /// Canonical key and numbering. Equal keys mean isomorphic balls.
+    canonical: CanonicalForm,
 }
 
 impl CompiledBall {
     /// Build from an edge list that `check_structure` accepted: normalize and
-    /// sort the edges, build adjacency, and BFS from the root for the layers.
+    /// sort the edges, build adjacency, BFS from the root for the layers, and
+    /// compute the canonical form.
     ///
-    /// Callers must run `check_structure` first. Debug builds assert it, so a
-    /// missed check fails loudly in tests.
+    /// Callers must run `check_structure` first, or use [`Self::from_edges`].
+    /// Debug builds assert it, so a missed check fails loudly in tests.
     pub fn from_checked_edges(edges: &[Edge]) -> Self {
         debug_assert!(
             check_structure(edges, 0).is_empty(),
@@ -203,10 +207,23 @@ impl CompiledBall {
         }
 
         let layers = bfs_layers(&adjacency);
+        let canonical = canonical_form(&adjacency, &layers);
         Self {
             adjacency,
             layers,
             edges: normalized,
+            canonical,
+        }
+    }
+
+    /// Run `check_structure`, then build: the ball, or every issue found.
+    /// Issues carry type index 0.
+    pub fn from_edges(edges: &[Edge]) -> Result<Self, Vec<Issue>> {
+        let issues = check_structure(edges, 0);
+        if issues.is_empty() {
+            Ok(Self::from_checked_edges(edges))
+        } else {
+            Err(issues)
         }
     }
 
@@ -243,7 +260,7 @@ impl CompiledBall {
         self.degree(0)
     }
 
-    /// Number of nodes at each distance. Part of the canonical key in step 3.
+    /// Number of nodes at each distance. Part of the canonical key.
     pub fn layer_sizes(&self) -> Vec<usize> {
         self.layers.iter().map(Vec::len).collect()
     }
@@ -251,6 +268,17 @@ impl CompiledBall {
     /// Normalized, sorted edges.
     pub fn edges(&self) -> &[Edge] {
         &self.edges
+    }
+
+    /// Equal for two balls exactly when they are isomorphic with root
+    /// mapped to root.
+    pub fn canonical_key(&self) -> &CanonicalKey {
+        &self.canonical.key
+    }
+
+    /// `canonical_labeling()[v]` is node v's number in the canonical form.
+    pub fn canonical_labeling(&self) -> &[Node] {
+        &self.canonical.labeling
     }
 }
 

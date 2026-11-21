@@ -20,7 +20,6 @@ const COMPILE_FIXTURES: &[(&str, IssueCode)] = &[
     ("beyond_radius.json", IssueCode::BeyondRadius),
     ("shallow.json", IssueCode::ShallowType),
     ("exact_duplicate.json", IssueCode::ExactDuplicate),
-    // Needs step 3 (canonical form): skip this entry until then.
     ("isomorphic_duplicate.json", IssueCode::IsomorphicDuplicate),
     ("two_bad_types.json", IssueCode::SelfLoop), // and NodeGap at index 2
 ];
@@ -76,9 +75,6 @@ fn fixture(name: &str) -> PathBuf {
 #[test]
 fn compile_fixtures_report_their_code() {
     for &(name, code) in COMPILE_FIXTURES {
-        if code == IssueCode::IsomorphicDuplicate {
-            continue; // needs step 3 (canonical form)
-        }
         let (r, types) = load(&fixture(name));
         let outcome = compile(r, &types);
         assert!(
