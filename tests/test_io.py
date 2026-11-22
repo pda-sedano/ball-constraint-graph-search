@@ -67,7 +67,13 @@ COMPILE_FIXTURES = [
     ("unrealizable.json", IssueCode.UNREALIZABLE),  # ...so nothing is left
 ]
 
-EXAMPLE_RULESETS = ["star-only.json", "path-ball-r2.json", "dimer-r1.json"]
+EXAMPLE_RULESETS = [
+    "star-only.json",
+    "path-ball-r2.json",
+    "dimer-r1.json",
+    "cornerless-patch-r3.json",
+    "friendship-paradox.json",
+]
 
 
 # --- Errors -------------------------------------------------------------------

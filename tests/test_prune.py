@@ -68,6 +68,33 @@ def test_removal_indices_follow_merged_duplicates():
     ]
 
 
+def test_friendship_paradox_is_unrealizable_in_three_rounds(rulesets_dir):
+    """Each node's neighbors have one more neighbor than it does: removed from the top degree down."""
+    compiled, report = load_and_compile(rulesets_dir / "friendship-paradox.json")
+    assert [(rm.type_index, rm.round) for rm in removals(compiled)] == [(2, 1), (1, 2), (0, 3)]
+    assert IssueCode.UNREALIZABLE in report.codes()
+
+
+def test_cornerless_patch_keeps_what_a_tube_needs(rulesets_dir):
+    """Without the corner type, everything that could see a corner goes, in two rounds.
+
+    What is left is truly realizable, not just unpruned: every ball of a grid
+    rolled into a tube is among the kept types.
+    """
+    compiled, report = load_and_compile(rulesets_dir / "cornerless-patch-r3.json")
+    assert [(rm.type_index, rm.round) for rm in removals(compiled)] == [
+        (4, 1),
+        (5, 1),
+        (7, 1),
+        (6, 2),
+    ]
+    assert IssueCode.UNREALIZABLE not in report.codes()
+    tube = nx.cartesian_product(nx.cycle_graph(8), nx.path_graph(8))
+    kept = set(compiled.kept_indices)
+    for ball in ruleset_from_graph(tube, 3).types:
+        assert compiled.index_of(list(ball.edges)) in kept
+
+
 # --- Oracle ----------------------------------------------------------------------
 
 def _ball_graph(edges):
