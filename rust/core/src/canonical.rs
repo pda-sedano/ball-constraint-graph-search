@@ -17,15 +17,26 @@
 //! The key is the layer sizes plus the edge list under that numbering. The
 //! layer sizes are needed because a labeled graph alone does not say which
 //! colors its nodes had.
+//!
+//! # Whole graphs
+//!
+//! [`canonical_graph`] and [`automorphism_count`] work on a whole [`Graph`],
+//! for the sampler and the enumeration baseline. They use nauty's sparse mode
+//! (`sparsenauty`), whose memory grows with the number of edges. The dense
+//! mode used for balls stores an n-by-n adjacency matrix, which is the faster
+//! choice for balls of a few dozen nodes but would need about 125 GB for a
+//! million-node sample.
 
 use std::os::raw::c_int;
 
 use nauty_Traces_sys::{
-    densenauty, empty_graph, optionblk, statsblk, ADDONEEDGE, FALSE, SETWORDSNEEDED, TRUE,
+    densenauty, empty_graph, optionblk, sparsegraph, sparsenauty, statsblk, SparseGraph,
+    ADDONEEDGE, FALSE, SETWORDSNEEDED, TRUE,
 };
 
 use crate::ball::{Edge, Node};
 use crate::graph::Graph;
+use crate::graph6::write_graph6;
 
 /// A canonical key: equal keys mean isomorphic rooted balls.
 ///
@@ -60,49 +71,122 @@ pub struct CanonicalForm {
     pub labeling: Vec<Node>,
 }
 
+/// A whole graph under nauty's canonical numbering, with its automorphism
+/// count. Two graphs have equal `edges` (and `num_nodes`) exactly when they are
+/// isomorphic.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanonicalGraph {
+    pub num_nodes: usize,
+    /// Edges under the canonical numbering, normalized `(min, max)` and sorted.
+    pub edges: Vec<Edge>,
+    /// |Aut|, as in [`automorphism_count`].
+    pub automorphisms: f64,
+}
+
+impl CanonicalGraph {
+    /// The canonical edges as one graph6 line: a short, hashable key for an
+    /// unlabelled graph. graph6 stores every node pair, so it takes about
+    /// n^2/12 bytes; meant for the small graphs whose visits the sampler
+    /// counts, not for large samples.
+    pub fn graph6(&self) -> String {
+        write_graph6(self.num_nodes, &self.edges)
+    }
+}
+
+/// `graph` under nauty's canonical numbering, with |Aut|.
+pub fn canonical_graph(graph: &Graph) -> CanonicalGraph {
+    let (lab, automorphisms) = sparse_nauty(graph, true);
+    let mut labeling: Vec<Node> = vec![0; lab.len()];
+    for (number, &v) in lab.iter().enumerate() {
+        labeling[v as usize] = number as Node;
+    }
+    let mut edges: Vec<Edge> = graph
+        .edges()
+        .into_iter()
+        .map(|(u, v)| {
+            let (a, b) = (labeling[u as usize], labeling[v as usize]);
+            (a.min(b), a.max(b))
+        })
+        .collect();
+    edges.sort_unstable();
+    CanonicalGraph {
+        num_nodes: graph.num_nodes(),
+        edges,
+        automorphisms,
+    }
+}
+
 /// |Aut| of a whole graph: how many permutations of its nodes preserve every
-/// edge, from nauty. nauty reports it as a double, so it is exact below 2^53;
-/// past that it is the nearest double. 1 for the empty graph.
+/// edge, from nauty's sparse mode. nauty reports it as a double, so it is
+/// exact below 2^53; past that it is the nearest double. 1 for the empty graph.
 pub fn automorphism_count(graph: &Graph) -> f64 {
+    sparse_nauty(graph, false).1
+}
+
+/// Run `sparsenauty` on the whole graph with every node in one cell. Returns
+/// `lab` (with `canonical`, `lab[i]` is the node numbered i) and |Aut|.
+fn sparse_nauty(graph: &Graph, canonical: bool) -> (Vec<c_int>, f64) {
     let n = graph.num_nodes();
     if n == 0 {
-        return 1.0;
+        return (Vec::new(), 1.0);
     }
-    let m = SETWORDSNEEDED(n);
-    let mut dense = empty_graph(m, n);
-    for u in 0..n {
-        for &w in graph.neighbors(u as Node) {
-            if u < w as usize {
-                ADDONEEDGE(&mut dense, u, w as usize, m);
-            }
+    let arcs = 2 * graph.num_edges();
+    let mut input = SparseGraph::new(n, arcs);
+    let mut position = 0;
+    for v in 0..n {
+        let neighbors = graph.neighbors(v as Node);
+        input.v[v] = position;
+        input.d[v] = neighbors.len() as c_int;
+        for &w in neighbors {
+            input.e[position] = w as c_int;
+            position += 1;
         }
     }
+    // nauty writes the canonical graph here. It reallocates only buffers
+    // that are too small, and these are exactly big enough, so it never
+    // frees or replaces memory Rust owns.
+    let mut output = SparseGraph::new(n, arcs);
+    let mut output_raw: sparsegraph = (&mut output).into();
+
     let mut lab: Vec<c_int> = vec![0; n];
     let mut ptn: Vec<c_int> = vec![0; n];
     let mut orbits: Vec<c_int> = vec![0; n];
-    let mut unused = empty_graph(m, n);
     let mut options = optionblk {
-        getcanon: FALSE,
+        getcanon: if canonical { TRUE } else { FALSE },
         defaultptn: TRUE, // one cell: every node may go anywhere
-        ..optionblk::default()
+        ..optionblk::default_sparse()
     };
     let mut stats = statsblk::default();
-    // SAFETY: as in `canonical_form`: every buffer has the length nauty
-    // expects for n nodes and m setwords per row.
+    // SAFETY: `input` is a valid sparse graph: n entries in v and d, and the
+    // neighbors of v at e[v[v]..v[v] + d[v]], within e's 2m entries. `lab`,
+    // `ptn` and `orbits` hold n ints, and `output_raw` points at buffers of
+    // the same sizes as `input`'s, which is all nauty needs for the canonical
+    // graph. nauty uses thread-local workspace, so concurrent calls are safe.
     unsafe {
-        densenauty(
-            dense.as_mut_ptr(),
+        sparsenauty(
+            &mut (&mut input).into(),
             lab.as_mut_ptr(),
             ptn.as_mut_ptr(),
             orbits.as_mut_ptr(),
             &mut options,
             &mut stats,
-            m as c_int,
-            n as c_int,
-            unused.as_mut_ptr(),
+            if canonical {
+                &mut output_raw
+            } else {
+                std::ptr::null_mut()
+            },
         );
     }
-    stats.grpsize1 * 10f64.powi(stats.grpsize2)
+    assert_eq!(
+        stats.errstatus, 0,
+        "nauty reported error {}",
+        stats.errstatus
+    );
+    debug_assert!(
+        output_raw.v == output.v.as_mut_ptr() && output_raw.e == output.e.as_mut_ptr(),
+        "nauty reallocated the canonical graph's buffers"
+    );
+    (lab, stats.grpsize1 * 10f64.powi(stats.grpsize2))
 }
 
 /// The canonical form of a connected rooted graph, root 0.
@@ -488,5 +572,110 @@ mod tests {
         assert_eq!(automorphism_count(&graph(10, &petersen)), 120.0);
         assert_eq!(automorphism_count(&graph(5, &[])), 120.0);
         assert_eq!(automorphism_count(&Graph::new(0, 0)), 1.0);
+        // Two disjoint triangles plus an isolated node: (3!)^2 * 2.
+        let triangles = [(0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3)];
+        assert_eq!(automorphism_count(&graph(7, &triangles)), 72.0);
+    }
+
+    #[test]
+    fn automorphism_count_scales_to_large_sparse_graphs() {
+        //! A 100,000-node cycle. The dense mode would need a 1.25 GB matrix.
+        use crate::graph::Graph;
+        let n = 100_000usize;
+        let cycle: Vec<Edge> = (0..n as Node).map(|v| (v, (v + 1) % n as Node)).collect();
+        let g = Graph::from_edges(n, 2, &cycle).expect("valid");
+        assert_eq!(automorphism_count(&g), 2.0 * n as f64);
+    }
+
+    /// Every graph on n nodes (connected or not), by bitmask over node pairs.
+    fn all_graphs(n: usize) -> impl Iterator<Item = Vec<Edge>> {
+        let pairs: Vec<Edge> = (0..n as Node)
+            .flat_map(|u| (u + 1..n as Node).map(move |v| (u, v)))
+            .collect();
+        (0u32..1 << pairs.len()).map(move |mask| {
+            pairs
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask & (1 << i) != 0)
+                .map(|(_, &e)| e)
+                .collect()
+        })
+    }
+
+    /// The smallest relabeled edge list over every permutation: a brute-force
+    /// canonical form for tiny graphs.
+    fn brute_whole_key(edges: &[Edge], n: usize) -> Vec<Edge> {
+        let mut nodes: Vec<Node> = (0..n as Node).collect();
+        let mut best: Option<Vec<Edge>> = None;
+        permutations(&mut nodes, 0, &mut |perm| {
+            let mut relabeled: Vec<Edge> = edges
+                .iter()
+                .map(|&(u, v)| {
+                    let (a, b) = (perm[u as usize], perm[v as usize]);
+                    (a.min(b), a.max(b))
+                })
+                .collect();
+            relabeled.sort_unstable();
+            if best.as_ref().is_none_or(|b| relabeled < *b) {
+                best = Some(relabeled);
+            }
+        });
+        best.unwrap_or_default()
+    }
+
+    #[test]
+    fn whole_graph_keys_agree_with_brute_force() {
+        //! Every graph on up to 5 nodes: equal canonical edges exactly when
+        //! brute force says isomorphic. The class counts are the numbers of
+        //! unlabelled graphs (OEIS A000088); n = 6 checks the count only.
+        use crate::graph::Graph;
+        let expected_classes = [1, 1, 2, 4, 11, 34, 156];
+        for (n, &classes) in expected_classes.iter().enumerate().skip(1) {
+            let mut ours_to_brute: HashMap<Vec<Edge>, Vec<Edge>> = HashMap::new();
+            let mut brute_to_ours: HashMap<Vec<Edge>, Vec<Edge>> = HashMap::new();
+            for edges in all_graphs(n) {
+                let g = Graph::from_edges(n, n, &edges).expect("valid");
+                let form = canonical_graph(&g);
+                assert_eq!(form.automorphisms, automorphism_count(&g));
+                if n <= 5 {
+                    let brute = brute_whole_key(&edges, n);
+                    let mapped = ours_to_brute
+                        .entry(form.edges.clone())
+                        .or_insert_with(|| brute.clone());
+                    assert_eq!(mapped, &brute, "two non-isomorphic graphs share a key");
+                    let mapped = brute_to_ours
+                        .entry(brute)
+                        .or_insert_with(|| form.edges.clone());
+                    assert_eq!(mapped, &form.edges, "isomorphic graphs got different keys");
+                } else {
+                    ours_to_brute.insert(form.edges, Vec::new());
+                }
+            }
+            assert_eq!(ours_to_brute.len(), classes, "n = {n}");
+        }
+    }
+
+    #[test]
+    fn whole_graph_key_invariant_under_relabeling() {
+        use crate::graph::Graph;
+        let mut rng = Rng(5);
+        for _ in 0..200 {
+            let n = 1 + rng.below(60);
+            let mut edges = random_ball(n, rng.below(2 * n), &mut rng);
+            if rng.below(3) == 0 {
+                edges.truncate(edges.len() / 2); // sometimes disconnected
+            }
+            let original = canonical_graph(&Graph::from_edges(n, n, &edges).expect("valid"));
+            let mut perm: Vec<Node> = (0..n as Node).collect();
+            for i in (1..n).rev() {
+                perm.swap(i, rng.below(i + 1));
+            }
+            let relabeled: Vec<Edge> = edges
+                .iter()
+                .map(|&(u, v)| (perm[v as usize], perm[u as usize]))
+                .collect();
+            let other = canonical_graph(&Graph::from_edges(n, n, &relabeled).expect("valid"));
+            assert_eq!(other, original);
+        }
     }
 }

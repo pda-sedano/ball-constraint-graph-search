@@ -6,14 +6,19 @@
 //! turns them into Python `Issue` objects.
 
 use graph_search_core::{
-    automorphism_count as aut_count, ball_census as census, compile, parse_graph6 as parse,
-    valid_graphs, BallExtractor, CanonicalKey, CheckReport, Checker, CompiledBall, CompiledRuleset,
-    Edge, EmbedQuery, EmbeddingChecker, EnumerationError, Graph, Issue, IssueCode, Node, Outcome,
+    automorphism_count as aut_count, ball_census as census, canonical_graph, compile,
+    parse_graph6 as parse, valid_graphs, BallExtractor, CanonicalKey, CheckReport, Checker,
+    CompiledBall, CompiledRuleset, Edge, EmbedQuery, EmbeddingChecker, EnumerationError, Graph,
+    Issue, IssueCode, Node, Outcome, RecordOptions, Recorder, RulesetEnergy, Sampler, Start,
 };
 use pyo3::exceptions::PyOSError;
 use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
+use pyo3::types::{PyDict, PyTuple};
+
+/// Steps per chunk of a sampler run. Between chunks the run checks for
+/// Ctrl-C, with the GIL held only then.
+const SAMPLE_CHUNK: u64 = 20_000;
 
 /// One issue as Python receives it: (code, message, type_index).
 type PyIssue = (&'static str, String, Option<usize>);
@@ -182,6 +187,112 @@ impl PyCompiledRuleset {
             .map(|g| (g.graph6, g.automorphisms))
             .collect();
         Ok((found.candidates, valid))
+    }
+
+    /// Run one sampler chain in closed mode on `num_nodes` nodes, with this
+    /// ruleset's energy and the kept types' largest root degree as the cap.
+    ///
+    /// Starts from `start_edges` if given, else from `random_start_edges`
+    /// random edges. Runs `burn_in` steps, then records `steps` more. Returns
+    /// a dict: `max_degree`, `stats` (proposed_remove, accepted_remove,
+    /// proposed_add, accepted_add, capped, no_candidate), `valid_steps`,
+    /// `visits` as `(canonical_graph6, steps, automorphisms)` when
+    /// `count_graphs`, `snapshots` as `(step, edges, automorphisms)`, `trace`
+    /// as `(step, energy)`, `final_edges` and `final_energy`. Raises
+    /// ValueError if no type is kept, for a bad β or starting graph, and
+    /// KeyboardInterrupt on Ctrl-C.
+    #[pyo3(signature = (
+        num_nodes, steps, *, beta=1.0, seed=0, burn_in=0, snapshot_every=None,
+        count_graphs=true, trace_every=None, start_edges=None, random_start_edges=0,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn sample<'py>(
+        &self,
+        py: Python<'py>,
+        num_nodes: usize,
+        steps: u64,
+        beta: f64,
+        seed: u64,
+        burn_in: u64,
+        snapshot_every: Option<u64>,
+        count_graphs: bool,
+        trace_every: Option<u64>,
+        start_edges: Option<Vec<Edge>>,
+        random_start_edges: usize,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let ruleset = &self.inner;
+        let max_degree = ruleset
+            .pruning()
+            .kept()
+            .iter()
+            .filter_map(|&i| ruleset.ball(i))
+            .map(CompiledBall::root_degree)
+            .max()
+            .ok_or_else(|| PyValueError::new_err("no ball type is kept, so no graph is valid"))?;
+        if snapshot_every == Some(0) || trace_every == Some(0) {
+            return Err(PyValueError::new_err(
+                "snapshot_every and trace_every must be at least 1",
+            ));
+        }
+        let start = match start_edges {
+            Some(edges) => Start::Edges(edges),
+            None => Start::Random {
+                edges: random_start_edges,
+            },
+        };
+        let mut sampler = Sampler::new(
+            RulesetEnergy::new(ruleset),
+            num_nodes,
+            max_degree,
+            beta,
+            seed,
+            start,
+        )
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let mut recorder = Recorder::new(RecordOptions {
+            burn_in,
+            steps,
+            snapshot_every,
+            count_graphs,
+            trace_every,
+        });
+        while recorder.remaining() > 0 {
+            py.detach(|| recorder.advance(&mut sampler, SAMPLE_CHUNK));
+            py.check_signals()?;
+        }
+
+        let stats = sampler.stats();
+        let out = PyDict::new(py);
+        out.set_item("max_degree", max_degree)?;
+        out.set_item(
+            "stats",
+            (
+                stats.proposed_remove,
+                stats.accepted_remove,
+                stats.proposed_add,
+                stats.accepted_add,
+                stats.capped,
+                stats.no_candidate,
+            ),
+        )?;
+        out.set_item("valid_steps", recorder.valid_steps)?;
+        let mut visits: Vec<(String, u64, f64)> = recorder
+            .visits
+            .into_iter()
+            .map(|(key, v)| (key, v.steps, v.automorphisms))
+            .collect();
+        visits.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        out.set_item("visits", visits)?;
+        let snapshots: Vec<(u64, Vec<Edge>, f64)> = recorder
+            .snapshots
+            .into_iter()
+            .map(|s| (s.step, s.edges, s.automorphisms))
+            .collect();
+        out.set_item("snapshots", snapshots)?;
+        out.set_item("trace", recorder.trace)?;
+        out.set_item("final_edges", sampler.graph().edges())?;
+        out.set_item("final_energy", sampler.energy())?;
+        Ok(out)
     }
 
     /// The embedding check, for each of `centers` in the patch on nodes
@@ -439,6 +550,15 @@ fn automorphism_count(num_nodes: usize, edges: Vec<Edge>) -> PyResult<f64> {
     Ok(aut_count(&reference_graph(num_nodes, &edges)?))
 }
 
+/// The canonical graph6 and |Aut| of the graph on nodes `0..num_nodes` with
+/// these edges: equal strings exactly for isomorphic graphs. Raises
+/// ValueError for an invalid graph.
+#[pyfunction]
+fn canonical_graph6(num_nodes: usize, edges: Vec<Edge>) -> PyResult<(String, f64)> {
+    let form = canonical_graph(&reference_graph(num_nodes, &edges)?);
+    Ok((form.graph6(), form.automorphisms))
+}
+
 /// Every code compiling can report, with its severity: `(code, severity)` pairs.
 /// Python's tests compare these with `report.COMPILE_CODES` and `report.SEVERITY`.
 #[pyfunction]
@@ -460,5 +580,6 @@ fn graph_search_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(issue_codes, m)?)?;
     m.add_function(wrap_pyfunction!(parse_graph6, m)?)?;
     m.add_function(wrap_pyfunction!(automorphism_count, m)?)?;
+    m.add_function(wrap_pyfunction!(canonical_graph6, m)?)?;
     Ok(())
 }

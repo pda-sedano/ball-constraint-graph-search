@@ -22,8 +22,9 @@
 //!   distance to the open set, check each, and report.
 //! - [`graph6`] and [`enumeration`]: read geng's output and find the valid
 //!   graphs in it, with automorphism counts, for the enumeration baseline.
-//!
-//! The sampler comes later.
+//! - [`sample`]: the sampler, a Metropolis-Hastings chain over graphs whose
+//!   valid states are visited uniformly, and [`Recorder`] for its results.
+//! - [`rng`]: the sampler's seeded random numbers.
 
 pub mod ball;
 pub mod canonical;
@@ -36,19 +37,27 @@ pub mod graph;
 pub mod graph6;
 pub mod issue;
 pub mod prune;
+pub mod rng;
 pub mod ruleset;
+pub mod sample;
 #[cfg(test)]
 mod testing;
 
 pub use ball::{check_structure, CompiledBall, Edge, Node};
-pub use canonical::{automorphism_count, CanonicalForm, CanonicalKey};
+pub use canonical::{
+    automorphism_count, canonical_graph, CanonicalForm, CanonicalGraph, CanonicalKey,
+};
 pub use check::{CheckReport, Checker, NodeClass, NodeReport, Outcome};
 pub use compile::{compile, CompileOutcome};
 pub use embed::{EmbedQuery, EmbeddingChecker, STEP_BUDGET};
 pub use enumeration::{valid_graphs, Enumeration, EnumerationError, ValidGraph};
 pub use extract::{ball_census, BallExtractor, CensusEntry, VisibleBall};
 pub use graph::{Graph, GraphError};
-pub use graph6::{parse_graph6, Graph6Error};
+pub use graph6::{parse_graph6, write_graph6, Graph6Error};
 pub use issue::{Issue, IssueCode, Severity};
 pub use prune::{Pruning, Removal};
 pub use ruleset::CompiledRuleset;
+pub use sample::{
+    acceptance, Energy, Move, MoveStats, RecordOptions, Recorder, RulesetEnergy, Sampler,
+    SamplerError, Snapshot, Start, StepResult, Visits, ZeroEnergy,
+};

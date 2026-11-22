@@ -1,4 +1,5 @@
-//! Reading graph6, the one-line-per-graph format that nauty's geng writes.
+//! Reading and writing graph6, the one-line-per-graph format that nauty's
+//! geng writes.
 //!
 //! A line is the node count N(n), then the upper triangle of the adjacency
 //! matrix, column by column ((0,1), (0,2), (1,2), (0,3), ...), packed six bits
@@ -97,6 +98,46 @@ pub fn parse_graph6(line: &[u8]) -> Result<(usize, Vec<Edge>), Graph6Error> {
     Ok((n, edges))
 }
 
+/// One graph6 line, without a line break, for the graph on `0..n` with these
+/// edges (either orientation, no repeats or self-loops).
+///
+/// graph6 stores one bit per node pair, about n^2/12 bytes, so this is for
+/// small graphs.
+///
+/// # Panics
+///
+/// If an edge is a self-loop or has a node outside `0..n`, or n is too large
+/// for graph6 (2^36 or more).
+pub fn write_graph6(n: usize, edges: &[Edge]) -> String {
+    assert!(n < 1 << 36, "{n} nodes is too many for graph6");
+    let mut out: Vec<u8> = Vec::new();
+    if n < 63 {
+        out.push(n as u8 + 63);
+    } else if n < 258_048 {
+        out.push(126);
+        out.extend((0..3).rev().map(|i| (n >> (6 * i) & 63) as u8 + 63));
+    } else {
+        out.extend([126, 126]);
+        out.extend((0..6).rev().map(|i| (n >> (6 * i) & 63) as u8 + 63));
+    }
+    let header = out.len();
+    let bits = n * n.saturating_sub(1) / 2;
+    out.resize(header + bits.div_ceil(6), 0);
+    for &(u, v) in edges {
+        let (i, j) = (u.min(v) as usize, u.max(v) as usize);
+        assert!(
+            i != j && j < n,
+            "edge ({u}, {v}) is not valid for {n} nodes"
+        );
+        let k = j * (j - 1) / 2 + i;
+        out[header + k / 6] |= 1 << (5 - k % 6);
+    }
+    for byte in &mut out[header..] {
+        *byte += 63;
+    }
+    String::from_utf8(out).expect("graph6 is ASCII")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,6 +174,34 @@ mod tests {
                 found: 0
             })
         );
+    }
+
+    #[test]
+    fn writes_what_it_reads() {
+        assert_eq!(write_graph6(3, &[(0, 1), (2, 0), (1, 2)]), "Bw");
+        assert_eq!(write_graph6(4, &[(0, 1), (1, 2), (2, 3)]), "Ch");
+        assert_eq!(write_graph6(1, &[]), "@");
+        assert_eq!(write_graph6(0, &[]), "?");
+        // Round trips, including the 4-byte node count past 62 nodes.
+        let mut state = 9u64;
+        for n in [2usize, 5, 17, 62, 63, 100] {
+            let mut edges = Vec::new();
+            for j in 1..n {
+                for i in 0..j {
+                    state = state
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    if state >> 62 == 0 {
+                        edges.push((i as Node, j as Node));
+                    }
+                }
+            }
+            let line = write_graph6(n, &edges);
+            let (m, mut parsed) = parse_graph6(line.as_bytes()).expect("valid");
+            parsed.sort_unstable();
+            edges.sort_unstable();
+            assert_eq!((m, parsed), (n, edges), "n = {n}");
+        }
     }
 
     #[test]

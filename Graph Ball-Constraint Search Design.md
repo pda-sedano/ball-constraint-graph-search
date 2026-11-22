@@ -186,7 +186,7 @@ Step 4 is what makes the result exact. Ties come either from real symmetry, wher
 
 Implementations:
 
-- **Main path: nauty.** densenauty, called from Rust through the nauty-Traces-sys bindings, with one color per distance layer. A hand-written version of steps 1 to 5 was built first and measured 3 to 10 times slower, so it was removed. The key must also include the layer sizes, since a certificate alone does not record which colors were used.
+- **Main path: nauty.** densenauty, called from Rust through the nauty-Traces-sys bindings, with one color per distance layer. A hand-written version of steps 1 to 5 was built first and measured 3 to 10 times slower, so it was removed. The key must also include the layer sizes, since a certificate alone does not record which colors were used. Whole graphs (|Aut| and the sampler's graph keys) use nauty's sparse mode instead, whose memory grows with the edges: the dense mode stores an n-by-n matrix, about 125 GB at a million nodes.
 - **Cross-check: Python oracle, NetworkX only.** `weisfeiler_lehman_graph_hash` covers steps 1 to 3 without tie-breaking, so non-isomorphic balls can collide. Use it as a bucket key, then confirm with a VF2 isomorphism test that matches nodes on distance.
 - **Trees.** For a ball with no cycles, AHU encoding is exact: each node's code is the sorted tuple of its children's codes. Not implemented: nauty handles trees. If very large symmetric balls ever dominate profiling, nauty's Traces is the faster switch.
 
@@ -274,7 +274,7 @@ The sampler is a Markov chain with soft constraints. In equilibrium it visits ev
 - State: a graph on n nodes plus an open set.
 - Energy U: the number of failing nodes, plus (number of components − 1). Valid states are exactly those with U = 0.
 - Hard cap: reject any edge addition that pushes a node above the largest root degree in L. Valid graphs never exceed it, so uniformity is unaffected.
-- Sampling: record the state whenever U = 0, spaced far enough apart to be independent.
+- Sampling: the state after every step counts, including steps whose move was rejected, since the chain's time at a state is its weight. Samples kept for analysis are taken at fixed step numbers and kept if U = 0 there; taking the first valid state after each gap would favour valid graphs that are easy to walk into.
 
 **Moves.** With probability 1/2 remove a uniformly random existing edge. Otherwise add a uniformly random non-edge. If the chosen kind has no candidates, the step is a rejection.
 
@@ -298,7 +298,7 @@ In open mode, a third move swaps the flags of one random open node and one rando
 
 - Primary statistic: each unlabelled graph counted once. Weight every sample by its |Aut|.
 - Comparison statistic: the chain's native weighting.
-- Store |Aut| with every sample, from the canonical-form code. With open sets, count only symmetries that preserve which nodes are open.
+- Store |Aut| with every sample, from nauty's sparse mode on the whole graph. With open sets, count only symmetries that preserve which nodes are open.
 - Reweighting works unless a few rare, very symmetric graphs dominate the count-once answer.
 
 **Caveats.**
@@ -306,7 +306,7 @@ In open mode, a third move swaps the flags of one random open node and one rando
 - Uniformity holds only after the chain has equilibrated, which cannot be proven in general. The checks are agreement between independent runs and exhaustive enumeration at small n.
 - Steadily raising β finds valid graphs but not uniformly. It answers "does one exist", not statistical questions.
 
-**Version 1.** One chain at a fixed β, closed mode only, the add and remove moves above, and a full recheck after every move.
+**Version 1 (built).** One chain at a fixed β, closed mode only, the add and remove moves above, and a full recheck after every move. The degree cap is the largest root degree among kept types. The energy is a pluggable trait, so tests can run the chain with energy 0 or arbitrary energies apart from the checker. The chain starts from random edges, about n times the kept types' mean root degree halved, or from a given graph, and a seed reproduces a run exactly. A run returns the time spent on each valid unlabelled graph, keyed by canonical graph6; snapshots at fixed steps as edge lists with |Aut|, which Python saves as graph files; and diagnostics: acceptance, time valid and an energy trace. Counting graphs is on by default up to 32 nodes and refused above: a graph6 key takes about n²/12 bytes, and at large n nearly every valid state is new, so the table would grow with the run while telling nothing. Measured: 7 to 40 µs per step at n = 8 to 24. It reproduces n!/|Aut| on the cubic test ruleset and finds the cube for showcase at n = 8, but at n = 10 it never reached the Petersen graph in a million steps at any β tried. That is the parallel-tempering symptom in the table below.
 
 ## Tests
 
@@ -331,9 +331,9 @@ Property tests:
 
 Sampler ground truth:
 
-- At n up to 7, enumerate every unlabelled graph and keep the valid ones. NetworkX's graph atlas holds all of them.
-- Compare against how often the chain produces each. Frequencies should be proportional to n!/|Aut|.
-- Rerun this comparison after every later addition to the sampler.
+- At small n, list every valid graph with the enumeration baseline (step 8). NetworkX's graph atlas cross-checks it up to 7 nodes.
+- Compare with the time the chain spends on each, matched by canonical graph6. Shares should be proportional to n!/|Aut|. A test ruleset allowing every cubic graph (r = 1) gives distinct shares: at n = 8 its five graphs have |Aut| 48, 16, 16, 12 and 4, and a 300,000-step chain lands within 0.06 total variation.
+- Below the checker: on 4 nodes the transition rule satisfies detailed balance exactly for arbitrary energies, and the real chain matches exp(−βU) under the degree cap, with energy 0 and with random energies. A replayed chain checks that every step at U = 0 is counted. Dropping the proposal correction, redrawing capped additions, or counting only after accepted moves each fails these tests. Rerun all of them after every later addition to the sampler.
 
 ## Build order
 
@@ -345,9 +345,9 @@ Each step is testable before the next one exists, and steps 1 to 3 are already u
 4. **Graph and ball extraction, Rust (built).** Flat adjacency rows sized by the largest root degree in L (a reference graph uses its own), with add, remove and has-edge. Visible r-ball of a node with distances, plus "all balls in a reference graph" as a census with counts. Python gets ruleset\_from\_graph for NetworkX graphs and a single-ball extractor; the mutable graph stays in Rust until the sampler.
 5. **Pruning, Rust (built).** Visible sub-ball check on L in synchronous rounds, run by every compile. Pruned types stay in the compiled ruleset beside the list of survivors. Each removal is a warning naming the node whose sub-ball had no match and the removed types that used to supply it, and an empty result is reported as unrealizable. Python oracle: the same rule written directly with NetworkX, plus a check that a real graph's balls are never pruned.
 6. **Embedding check, Rust (built).** Backtracking over visible nodes in BFS order with twin symmetry breaking, falling back to constraint propagation after a step budget. No memo, by measurement. Matches only the kept types. Python oracle: the same rules as a node-match function for NetworkX's VF2 matcher.
-7. **Validity checker, Rust, plus the Python oracle checker (built).** Classification, per-node check, report with failing nodes, energy, core fraction and core depth. The oracle is a slow NetworkX version, used only in tests. Introduces the graph file format, read and written from Python for now; Rust writes it with the sampler. The hand cases are literals in the tests, not files.
+7. **Validity checker, Rust, plus the Python oracle checker (built).** Classification, per-node check, report with failing nodes, energy, core fraction and core depth. The oracle is a slow NetworkX version, used only in tests. Introduces the graph file format, read and written from Python; a Rust writer waits for the command-line crate. The hand cases are literals in the tests, not files.
 8. **Enumeration baseline (built).** All valid closed graphs at small n, for ground truth: nauty's geng (connected with -c) lists every graph with degrees between the smallest and largest kept root degree, and Rust checks each from its graph6 output, returning the valid ones with |Aut|. Both levels are cached under `.cache/`: geng's lists by n and degree range, shared by every ruleset, and each ruleset's valid graphs by n, keyed by a hash of its types. Checking costs about 5 µs per graph in a release build; geng itself is faster. Candidates grow quickly with n and the degree range, for example 1.5 million at n = 10 with degrees 3 to 6. The baseline is cross-checked against NetworkX's graph atlas up to 7 nodes.
-9. **Sampler, version 1, Rust.** One chain, closed mode, full recheck. Each sample is saved in the graph file format, with |Aut| and the chain step in its metadata, for Python to read for analysis and drawing.
+9. **Sampler, version 1, Rust (built).** One chain, closed mode, full recheck, as described under Sampler. Python's `sampler.sample` runs it and returns the run; `compare_with_baseline` checks its time on each graph against step 8; `save_snapshots` writes snapshots as graph files with |Aut|, β, seed and the chain step in their metadata. |Aut| and graph keys moved to nauty's sparse mode.
 
 After step 4 a ruleset can be extracted from any graph and round-tripped through a file.
 

@@ -1,6 +1,7 @@
 """Type stub for the Rust extension. Keep in step with rust/py/src/lib.rs."""
 
 import os
+from typing import Any
 
 CanonicalKey = tuple[tuple[int, ...], tuple[tuple[int, int], ...]]
 """(layer_sizes, edges): equal keys mean isomorphic balls, root to root. Hashable."""
@@ -69,6 +70,21 @@ class CompiledRuleset:
         """The validity checker. check.check_graph wraps this for NetworkX graphs."""
     def valid_graph6(self, path: str | os.PathLike[str]) -> tuple[int, list[tuple[str, float]]]:
         """Closed-mode check of every graph in a graph6 file: (candidates, [(graph6, |Aut|)])."""
+    def sample(
+        self,
+        num_nodes: int,
+        steps: int,
+        *,
+        beta: float = 1.0,
+        seed: int = 0,
+        burn_in: int = 0,
+        snapshot_every: int | None = None,
+        count_graphs: bool = True,
+        trace_every: int | None = None,
+        start_edges: list[tuple[int, int]] | None = None,
+        random_start_edges: int = 0,
+    ) -> dict[str, Any]:
+        """One closed-mode sampler chain. sampler.sample wraps this; see it for the keys."""
     def compatible_types(
         self,
         num_nodes: int,
@@ -104,7 +120,10 @@ def parse_graph6(line: str) -> tuple[int, list[tuple[int, int]]]:
     """(num_nodes, edges) of one graph6 line. ValueError if not graph6."""
 
 def automorphism_count(num_nodes: int, edges: list[tuple[int, int]]) -> float:
-    """|Aut| from nauty, exact below 2^53."""
+    """|Aut| from nauty's sparse mode, exact below 2^53."""
+
+def canonical_graph6(num_nodes: int, edges: list[tuple[int, int]]) -> tuple[str, float]:
+    """(canonical graph6, |Aut|): equal strings exactly for isomorphic graphs."""
 
 def issue_codes() -> list[tuple[str, str]]:
     """Every code compiling can report, as (code, severity) pairs."""
