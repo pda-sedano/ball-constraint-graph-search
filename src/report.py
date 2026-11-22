@@ -41,6 +41,12 @@ class IssueCode(Enum):
     NEGATIVE_NODE = "negative_node"
     NODE_TOO_LARGE = "node_too_large"  # above balltype.MAX_NODE, Rust's u32 limit
 
+    # Graph files (Python: graph_io). The metadata keys reuse MISSING_KEY,
+    # UNKNOWN_KEY, BAD_FORMAT_VERSION and BAD_VALUE above.
+    MALFORMED_GRAPH_FILE = "malformed_graph_file"  # not a readable safetensors file
+    BAD_TENSOR = "bad_tensor"  # missing or unknown tensor, or wrong dtype or shape
+    NODE_OUT_OF_RANGE = "node_out_of_range"  # a node id not below num_nodes
+
     # Everything below is reported by Rust when compiling. Rust's codes must
     # use these same string values.
 
@@ -73,6 +79,9 @@ SEVERITY: dict[IssueCode, Severity] = {
     IssueCode.MALFORMED_EDGE: Severity.ERROR,
     IssueCode.NEGATIVE_NODE: Severity.ERROR,
     IssueCode.NODE_TOO_LARGE: Severity.ERROR,
+    IssueCode.MALFORMED_GRAPH_FILE: Severity.ERROR,
+    IssueCode.BAD_TENSOR: Severity.ERROR,
+    IssueCode.NODE_OUT_OF_RANGE: Severity.ERROR,
     IssueCode.SELF_LOOP: Severity.ERROR,
     IssueCode.REPEATED_EDGE: Severity.ERROR,
     IssueCode.NODE_GAP: Severity.ERROR,

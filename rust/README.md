@@ -73,3 +73,15 @@ Both choices, and leaving out a memo, came from a benchmark (see the design doc)
 pass all the nodes in one call, since each call rebuilds the checker. `tests/test_embed.py`
 compares it with a NetworkX VF2 oracle that shares none of its code.
 
+## Validity checker
+
+`core/src/check.rs` decides whether a graph with an open set is valid for a ruleset. `Checker::check`
+classifies every node by its distance to the open set (open, shadow, core), looks core nodes up by
+canonical key, runs the embedding check on the rest, and returns a `CheckReport`: the verdict, each
+node's class and outcome, the failing nodes, components, core fraction and depth, and the energy the
+sampler will minimize. Only kept types count, so a core node whose ball is a pruned type fails.
+`Checker::check_node` is the per-node function the incremental check will reuse. From Python,
+`check.check_graph(compiled, G, open_nodes, max_open)` and `check.check_file(compiled, path)`;
+graph files are read and written by `graph_io.py` (safetensors; needs `numpy` and `safetensors`).
+`tests/test_check.py` compares the checker node by node with a NetworkX oracle in `tests/oracle.py`.
+

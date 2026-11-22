@@ -6,8 +6,9 @@
 //! turns them into Python `Issue` objects.
 
 use graph_search_core::{
-    ball_census as census, compile, BallExtractor, CanonicalKey, CompiledBall, CompiledRuleset,
-    Edge, EmbedQuery, EmbeddingChecker, Graph, Issue, IssueCode, Node,
+    ball_census as census, compile, BallExtractor, CanonicalKey, CheckReport, Checker,
+    CompiledBall, CompiledRuleset, Edge, EmbedQuery, EmbeddingChecker, Graph, Issue, IssueCode,
+    Node, Outcome,
 };
 use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
@@ -140,6 +141,27 @@ impl PyCompiledRuleset {
             .index_of(ball_from_edges(&edges)?.canonical_key()))
     }
 
+    /// The validity checker on the graph with nodes `0..num_nodes`, these
+    /// edges and open nodes, and an optional cap `max_open` on the open set.
+    /// Raises ValueError for an invalid graph or a node out of range.
+    #[pyo3(signature = (num_nodes, edges, open_nodes, max_open=None))]
+    fn check(
+        &self,
+        num_nodes: usize,
+        edges: Vec<Edge>,
+        open_nodes: Vec<Node>,
+        max_open: Option<usize>,
+    ) -> PyResult<PyCheckReport> {
+        let graph = reference_graph(num_nodes, &edges)?;
+        if let Some(v) = open_nodes.iter().find(|&&v| v as usize >= num_nodes) {
+            return Err(PyValueError::new_err(format!(
+                "open node {v} is out of range for {num_nodes} nodes"
+            )));
+        }
+        let inner = Checker::new(&self.inner).check(&graph, &open_nodes, max_open);
+        Ok(PyCheckReport { inner })
+    }
+
     /// The embedding check, for each of `centers` in the patch on nodes
     /// `0..num_nodes` with these edges and open nodes: the indices of the
     /// kept types its visible ball fits, ascending. An empty list means the
@@ -177,6 +199,99 @@ impl PyCompiledRuleset {
                 checker.compatible(&EmbedQuery::new(&ball, &open, &distance, r))
             })
             .collect())
+    }
+}
+
+/// The validity checker's report, read-only from Python. `check.py` wraps it
+/// with node labels.
+#[pyclass(name = "CheckReport", frozen, module = "graph_search_rs")]
+struct PyCheckReport {
+    inner: CheckReport,
+}
+
+#[pymethods]
+impl PyCheckReport {
+    /// Connected, open set within the cap, and every node passes.
+    #[getter]
+    fn valid(&self) -> bool {
+        self.inner.is_valid()
+    }
+
+    #[getter]
+    fn components(&self) -> usize {
+        self.inner.components
+    }
+
+    #[getter]
+    fn open_count(&self) -> usize {
+        self.inner.open_count
+    }
+
+    #[getter]
+    fn max_open(&self) -> Option<usize> {
+        self.inner.max_open
+    }
+
+    /// Failing nodes plus (components - 1): the sampler's energy.
+    #[getter]
+    fn energy(&self) -> usize {
+        self.inner.energy()
+    }
+
+    #[getter]
+    fn core_fraction(&self) -> f64 {
+        self.inner.core_fraction()
+    }
+
+    /// Largest distance to the open set minus r; None in closed mode.
+    #[getter]
+    fn core_depth(&self) -> Option<i64> {
+        self.inner.core_depth()
+    }
+
+    /// Failing nodes, ascending.
+    #[getter]
+    fn failing(&self) -> Vec<Node> {
+        self.inner.failing()
+    }
+
+    /// Each node's class: "open", "shadow" or "core".
+    fn classes(&self) -> Vec<&'static str> {
+        self.inner.nodes.iter().map(|n| n.class.as_str()).collect()
+    }
+
+    /// Each node's distance to the open set, None if none is reachable.
+    fn distances(&self) -> Vec<Option<u32>> {
+        self.inner
+            .nodes
+            .iter()
+            .map(|n| n.distance_to_open)
+            .collect()
+    }
+
+    /// Each node's outcome as (kind, ball indices): ("matched", [i]),
+    /// ("pruned", [i]), ("unmatched", []) or ("compatible", [i, ...]).
+    fn outcomes(&self) -> Vec<(&'static str, Vec<usize>)> {
+        self.inner
+            .nodes
+            .iter()
+            .map(|n| match &n.outcome {
+                Outcome::Matched(i) => ("matched", vec![*i]),
+                Outcome::Pruned(i) => ("pruned", vec![*i]),
+                Outcome::Unmatched => ("unmatched", Vec::new()),
+                Outcome::Compatible(types) => ("compatible", types.clone()),
+            })
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CheckReport(valid={}, nodes={}, failing={}, components={})",
+            self.inner.is_valid(),
+            self.inner.num_nodes(),
+            self.inner.failing().len(),
+            self.inner.components
+        )
     }
 }
 
@@ -301,6 +416,7 @@ fn issue_codes() -> Vec<(&'static str, &'static str)> {
 #[pymodule]
 fn graph_search_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCompiledRuleset>()?;
+    m.add_class::<PyCheckReport>()?;
     m.add_function(wrap_pyfunction!(compile_ruleset, m)?)?;
     m.add_function(wrap_pyfunction!(canonical_key, m)?)?;
     m.add_function(wrap_pyfunction!(extract_ball, m)?)?;

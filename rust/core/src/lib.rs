@@ -18,11 +18,14 @@
 //!   [`ball_census()`], every ball shape in a reference graph with counts.
 //! - [`embed`]: the embedding check for open and shadow nodes, whose visible
 //!   ball must fit inside some kept type ([`EmbeddingChecker`]).
+//! - [`check`]: the validity checker ([`Checker`]): classify every node by its
+//!   distance to the open set, check each, and report.
 //!
-//! Later steps add the validity checker and the sampler.
+//! The sampler comes later.
 
 pub mod ball;
 pub mod canonical;
+pub mod check;
 pub mod compile;
 pub mod embed;
 pub mod extract;
@@ -30,9 +33,12 @@ pub mod graph;
 pub mod issue;
 pub mod prune;
 pub mod ruleset;
+#[cfg(test)]
+mod testing;
 
 pub use ball::{check_structure, CompiledBall, Edge, Node};
 pub use canonical::{CanonicalForm, CanonicalKey};
+pub use check::{CheckReport, Checker, NodeClass, NodeReport, Outcome};
 pub use compile::{compile, CompileOutcome};
 pub use embed::{EmbedQuery, EmbeddingChecker, STEP_BUDGET};
 pub use extract::{ball_census, BallExtractor, CensusEntry, VisibleBall};

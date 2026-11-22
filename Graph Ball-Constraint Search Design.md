@@ -254,7 +254,7 @@ Steps:
 1. **Global checks.** The graph is simple and connected, and the open set has at most m nodes.
 2. **Classify nodes.** One multi-source BFS from the open set gives each node's distance to the nearest open node. 0 is open, 1 to r − 1 is shadow, r or more is core. With an empty open set every node is core.
 3. **Extract each visible ball.** BFS to depth r, take the induced subgraph, keep the distances.
-4. **Core nodes.** Canonical form, then lookup in L. Absent means fail.
+4. **Core nodes.** Canonical form, then lookup in L. Absent means fail, and so does a type that pruning removed: no graph contains it, so another node must fail as well, but naming this one makes the report sharper.
 5. **Open and shadow nodes.** Embedding check. An empty compatible set means fail.
 6. **Report.** Verdict, failing nodes with reasons, each node's class and type ID or compatible set, core fraction, core depth.
 
@@ -314,7 +314,7 @@ Each piece has a test that does not depend on the pieces built after it.
 
 Hand cases for the checker:
 
-- The star example, r = 2, closed mode: node a fails and the other three pass.
+- The star example, r = 2, closed mode: node a fails, since its ball is no type. The other three fail too: their balls are the star type, which pruning removes.
 - A cycle with L holding only the path ball: valid in closed mode once n ≥ 2r + 2.
 - With the same L, a path with both endpoints open: valid at m = 2, invalid at m = 0.
 
@@ -345,7 +345,7 @@ Each step is testable before the next one exists, and steps 1 to 3 are already u
 4. **Graph and ball extraction, Rust (built).** Flat adjacency rows sized by the largest root degree in L (a reference graph uses its own), with add, remove and has-edge. Visible r-ball of a node with distances, plus "all balls in a reference graph" as a census with counts. Python gets ruleset\_from\_graph for NetworkX graphs and a single-ball extractor; the mutable graph stays in Rust until the sampler.
 5. **Pruning, Rust (built).** Visible sub-ball check on L in synchronous rounds, run by every compile. Pruned types stay in the compiled ruleset beside the list of survivors. Each removal is a warning naming the node whose sub-ball had no match and the removed types that used to supply it, and an empty result is reported as unrealizable. Python oracle: the same rule written directly with NetworkX, plus a check that a real graph's balls are never pruned.
 6. **Embedding check, Rust (built).** Backtracking over visible nodes in BFS order with twin symmetry breaking, falling back to constraint propagation after a step budget. No memo, by measurement. Matches only the kept types. Python oracle: the same rules as a node-match function for NetworkX's VF2 matcher.
-7. **Validity checker, Rust, plus the Python oracle checker.** Classification, per-node check, report. The oracle is a slow NetworkX version for n up to about 10, used only in tests. Introduces the graph file format; the hand cases are literals in the tests, not files.
+7. **Validity checker, Rust, plus the Python oracle checker (built).** Classification, per-node check, report with failing nodes, energy, core fraction and core depth. The oracle is a slow NetworkX version, used only in tests. Introduces the graph file format, read and written from Python for now; Rust writes it with the sampler. The hand cases are literals in the tests, not files.
 8. **Enumeration baseline.** All valid graphs at very small n, run through the Rust checker, for ground truth. NetworkX's graph atlas stops at 7 nodes; nauty's geng (connected only with -c, degree cap with -D) goes much further, read from its graph6 output.
 9. **Sampler, version 1, Rust.** One chain, closed mode, full recheck. Each sample is saved in the graph file format, with |Aut| and the chain step in its metadata, for Python to read for analysis and drawing.
 

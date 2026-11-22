@@ -1,18 +1,16 @@
 """The embedding check, against an independent NetworkX oracle.
 
-The oracle restates the design doc's rules as a node-match function for
-NetworkX's VF2 matcher, which finds induced subgraphs, and computes every
-distance with NetworkX itself. It shares no code with the Rust matcher, its
-twin symmetry breaking, or its propagation fallback. Skipped as a whole when
+The oracle (tests/oracle.py) restates the design doc's rules as a node-match
+function for NetworkX's VF2 matcher, which finds induced subgraphs, and
+computes every distance with NetworkX itself. It shares no code with the Rust
+matcher, its twin symmetry breaking, or its propagation fallback. Skipped as a whole when
 the extension is not built (see rust/README.md).
 """
 
-import math
 import random
 
 import networkx as nx
 import pytest
-from networkx.algorithms.isomorphism import GraphMatcher
 
 pytest.importorskip("graph_search_rs")
 
@@ -20,69 +18,9 @@ from balltype import BallType  # noqa: E402
 from compiled import compile_ruleset, load_and_compile  # noqa: E402
 from embed import compatible_types  # noqa: E402
 from extract import ruleset_from_graph  # noqa: E402
+from oracle import compatible_types as oracle_compatible  # noqa: E402
+from oracle import cut_patch  # noqa: E402
 from ruleset import Ruleset  # noqa: E402
-
-
-# --- The oracle -------------------------------------------------------------------
-
-def oracle_compatible(compiled, graph, open_nodes, v):
-    """Indices of the kept types that v's visible ball fits, the slow way."""
-    r = compiled.r
-    open_nodes = set(open_nodes)
-    to_open = (
-        nx.multi_source_dijkstra_path_length(graph, open_nodes) if open_nodes else {}
-    )
-    d_open = lambda u: to_open.get(u, math.inf)  # noqa: E731
-    seen = nx.single_source_shortest_path_length(graph, v, cutoff=r)
-    ball = nx.Graph(graph.subgraph(seen))
-    for u in ball:
-        ball.nodes[u].update(
-            depth=seen[u],
-            lower=min(seen[u], d_open(v) + 2 + d_open(u)),
-            open=u in open_nodes,
-            degree=ball.degree(u),
-        )
-
-    def fits(t, u):
-        """Type node attributes t, visible node attributes u."""
-        if not (u["lower"] <= t["depth"] <= u["depth"]):
-            return False
-        if u["depth"] < r:
-            return t["degree"] >= u["degree"] if u["open"] else t["degree"] == u["degree"]
-        return True
-
-    found = []
-    for i in compiled.kept_indices:
-        pattern = nx.Graph(compiled.edges(i))
-        pattern.add_node(0)
-        depth = nx.single_source_shortest_path_length(pattern, 0)
-        for t in pattern:
-            pattern.nodes[t].update(depth=depth[t], degree=pattern.degree(t))
-        if GraphMatcher(pattern, ball, node_match=fits).subgraph_is_isomorphic():
-            found.append(i)
-    return found
-
-
-def cut_patch(graph, size, flips, rng):
-    """A connected piece of graph, with nodes that lost a neighbor open, and
-    optionally a few random edge flips."""
-    start = rng.choice(list(graph))
-    region, frontier = set(), [start]
-    while len(region) < size and frontier:
-        v = frontier.pop(rng.randrange(len(frontier)))
-        if v not in region:
-            region.add(v)
-            frontier.extend(w for w in graph[v] if w not in region)
-    patch = nx.Graph(graph.subgraph(region))
-    open_nodes = {v for v in region if any(w not in region for w in graph[v])}
-    nodes = list(patch)
-    for _ in range(flips if len(nodes) >= 2 else 0):
-        a, b = rng.sample(nodes, 2)
-        if patch.has_edge(a, b):
-            patch.remove_edge(a, b)
-        else:
-            patch.add_edge(a, b)
-    return patch, open_nodes
 
 
 # --- Hand cases ---------------------------------------------------------------------

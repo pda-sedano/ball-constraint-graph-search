@@ -226,6 +226,30 @@ impl Graph {
         distance
     }
 
+    /// Number of connected components. 0 for a graph with no nodes.
+    pub fn component_count(&self) -> usize {
+        let mut seen = vec![false; self.num_nodes()];
+        let mut stack = Vec::new();
+        let mut components = 0;
+        for start in 0..self.num_nodes() {
+            if seen[start] {
+                continue;
+            }
+            components += 1;
+            seen[start] = true;
+            stack.push(start as Node);
+            while let Some(v) = stack.pop() {
+                for &w in self.neighbors(v) {
+                    if !seen[w as usize] {
+                        seen[w as usize] = true;
+                        stack.push(w);
+                    }
+                }
+            }
+        }
+        components
+    }
+
     fn push_neighbor(&mut self, v: Node, w: Node) {
         let degree = self.degree(v);
         self.slots[v as usize * self.max_degree + degree] = w;
@@ -258,6 +282,13 @@ mod tests {
         assert_eq!(g.distances_from(&[0, 5]), [0, 1, 2, 2, 1, 0, u32::MAX]);
         assert_eq!(g.distances_from(&[]), [u32::MAX; 7]);
         assert_eq!(g.distances_from(&[3, 3]), [3, 2, 1, 0, 1, 2, u32::MAX]);
+    }
+
+    #[test]
+    fn component_count_counts_isolated_nodes() {
+        let g = Graph::from_edges(6, 2, &[(0, 1), (1, 2), (3, 4)]).expect("valid");
+        assert_eq!(g.component_count(), 3);
+        assert_eq!(Graph::new(0, 1).component_count(), 0);
     }
 
     #[test]

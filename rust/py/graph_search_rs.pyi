@@ -6,6 +6,33 @@ CanonicalKey = tuple[tuple[int, ...], tuple[tuple[int, int], ...]]
 Removal = tuple[int, int, int, int, list[tuple[int, int]], list[int]]
 """(index, round, node, depth, sub_ball_edges, lost_suppliers); see CompiledRuleset.removals."""
 
+class CheckReport:
+    """The validity checker's report. check.check_graph wraps it with node labels."""
+
+    @property
+    def valid(self) -> bool: ...
+    @property
+    def components(self) -> int: ...
+    @property
+    def open_count(self) -> int: ...
+    @property
+    def max_open(self) -> int | None: ...
+    @property
+    def energy(self) -> int:
+        """Failing nodes plus (components - 1)."""
+    @property
+    def core_fraction(self) -> float: ...
+    @property
+    def core_depth(self) -> int | None:
+        """Largest distance to the open set minus r; None in closed mode."""
+    @property
+    def failing(self) -> list[int]: ...
+    def classes(self) -> list[str]:
+        """Per node: "open", "shadow" or "core"."""
+    def distances(self) -> list[int | None]: ...
+    def outcomes(self) -> list[tuple[str, list[int]]]:
+        """Per node: ("matched", [i]), ("pruned", [i]), ("unmatched", []) or ("compatible", [...])."""
+
 class CompiledRuleset:
     """A compiled ruleset, read-only. Ball indices count distinct types after merging
     duplicates, pruned or not; ``kept_indices`` lists those that survive pruning."""
@@ -30,6 +57,14 @@ class CompiledRuleset:
     def depth(self, index: int) -> int: ...
     def edges(self, index: int) -> list[tuple[int, int]]: ...
     def canonical_key(self, index: int) -> CanonicalKey: ...
+    def check(
+        self,
+        num_nodes: int,
+        edges: list[tuple[int, int]],
+        open_nodes: list[int],
+        max_open: int | None = None,
+    ) -> CheckReport:
+        """The validity checker. check.check_graph wraps this for NetworkX graphs."""
     def compatible_types(
         self,
         num_nodes: int,
