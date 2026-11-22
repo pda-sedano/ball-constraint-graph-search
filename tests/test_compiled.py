@@ -43,12 +43,22 @@ def test_to_issue_rejects_unknown_code():
 
 # --- Compiling ----------------------------------------------------------------
 
-def test_star_only_compiles_cleanly(rulesets_dir):
-    compiled, report = load_and_compile(rulesets_dir / "star-only.json")
+def test_path_ball_compiles_cleanly(rulesets_dir):
+    compiled, report = load_and_compile(rulesets_dir / "path-ball-r2.json")
     assert report.issues == []
     assert compiled is not None
     assert compiled.r == 2
     assert len(compiled) == 1
+    assert compiled.kept_indices == [0]
+
+
+def test_star_only_compiles_but_is_pruned(rulesets_dir):
+    """The design doc's star: no errors, so it compiles, but pruning removes its only type."""
+    compiled, report = load_and_compile(rulesets_dir / "star-only.json")
+    assert issue_pairs(report) == [(IssueCode.PRUNED_TYPE, 0), (IssueCode.UNREALIZABLE, None)]
+    assert report.ok
+    assert len(compiled) == 1
+    assert compiled.kept_indices == []
 
 
 def test_star_only_layers_and_degrees(rulesets_dir):

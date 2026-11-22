@@ -22,9 +22,14 @@ const COMPILE_FIXTURES: &[(&str, IssueCode)] = &[
     ("exact_duplicate.json", IssueCode::ExactDuplicate),
     ("isomorphic_duplicate.json", IssueCode::IsomorphicDuplicate),
     ("two_bad_types.json", IssueCode::SelfLoop), // and NodeGap at index 2
+    ("pruned_type.json", IssueCode::PrunedType), // two types, in rounds 1 and 2
+    ("unrealizable.json", IssueCode::PrunedType), // the only type...
+    ("unrealizable.json", IssueCode::Unrealizable), // ...so nothing is left
 ];
 
-const CLEAN_RULESETS: &[&str] = &["star-only.json", "path-ball-r2.json", "dimer-r1.json"];
+/// Example rulesets that compile with no issues at all. star-only.json is
+/// left out: pruning removes its only type.
+const CLEAN_RULESETS: &[&str] = &["path-ball-r2.json", "dimer-r1.json"];
 
 /// The repository root, two levels above this crate.
 fn repo_root() -> PathBuf {

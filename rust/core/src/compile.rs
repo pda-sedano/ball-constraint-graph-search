@@ -13,7 +13,8 @@ use crate::ruleset::CompiledRuleset;
 pub struct CompileOutcome {
     /// None whenever `issues` contains an error.
     pub ruleset: Option<CompiledRuleset>,
-    /// In the order found: per-type structure, then radius, then duplicates.
+    /// In the order found: per-type structure, then radius, then duplicates,
+    /// then pruning.
     pub issues: Vec<Issue>,
 }
 
@@ -32,7 +33,10 @@ impl CompileOutcome {
 ///   2. For each compiled ball, `check_radius`.
 ///   3. Across compiled balls, `merge_duplicates`.
 ///   4. If any issue is an error, `ruleset` is None. Otherwise build the
-///      `CompiledRuleset` from the merged balls and their source indices.
+///      `CompiledRuleset` from the merged balls and their source indices,
+///      which runs visible sub-ball pruning.
+///   5. `pruning_issues`: a warning per pruned type, and one more if none
+///      are left. Pruned types stay in the ruleset, marked as removed.
 ///
 /// An empty `types` slice compiles to an empty ruleset with no issues; Python
 /// already warned about it.
@@ -68,9 +72,62 @@ pub fn compile(r: u32, types: &[Vec<Edge>]) -> CompileOutcome {
         None
     } else {
         let (source_indices, balls) = kept.into_iter().unzip();
-        Some(CompiledRuleset::new(r, balls, source_indices))
+        let ruleset = CompiledRuleset::new(r, balls, source_indices);
+        issues.extend(pruning_issues(&ruleset));
+        Some(ruleset)
     };
     CompileOutcome { ruleset, issues }
+}
+
+/// One `PrunedType` warning per removed type, at its position in the file and
+/// in order of removal, then `Unrealizable` if no type is left. Messages name
+/// other types by file position too.
+fn pruning_issues(ruleset: &CompiledRuleset) -> Vec<Issue> {
+    let source = ruleset.source_indices();
+    let pruning = ruleset.pruning();
+    let mut issues: Vec<Issue> = pruning
+        .removed()
+        .iter()
+        .map(|removal| {
+            let suppliers: Vec<String> = removal
+                .lost_suppliers
+                .iter()
+                .map(|&i| source[i].to_string())
+                .collect();
+            let whose = match suppliers.as_slice() {
+                [] => "that no type has around its root".to_string(),
+                [one] => format!(
+                    "that only type {one} had around its root, removed in an earlier round"
+                ),
+                [rest @ .., last] => format!(
+                    "that only types {} and {last} had around their roots, removed in earlier rounds",
+                    rest.join(", ")
+                ),
+            };
+            Issue::new(
+                IssueCode::PrunedType,
+                format!(
+                    "round {}: node {} at depth {} sees a radius-{} ball {whose}",
+                    removal.round, removal.node, removal.depth, removal.radius
+                ),
+                Some(source[removal.index]),
+            )
+        })
+        .collect();
+    if !ruleset.is_empty() && pruning.kept().is_empty() {
+        let which = match ruleset.len() {
+            1 => "the only type".to_string(),
+            n => format!("all {n} distinct types"),
+        };
+        issues.push(Issue::new(
+            IssueCode::Unrealizable,
+            format!(
+                "pruning removed {which}, so no graph can have every node's ball in this ruleset"
+            ),
+            None,
+        ));
+    }
+    issues
 }
 
 /// `BeyondRadius` (error) if the ball's depth is greater than r,
@@ -138,6 +195,10 @@ fn merge_duplicates(balls: Vec<(usize, CompiledBall)>) -> (Vec<(usize, CompiledB
 mod tests {
     use super::*;
 
+    /// The path seen from its middle: supplies its own sub-balls, so pruning
+    /// keeps it and these tests see only the issues they are about.
+    const PATH_BALL: &[Edge] = &[(0, 1), (0, 2), (1, 3), (2, 4)];
+    /// The design doc's star example, which pruning removes.
     const STAR: &[Edge] = &[(0, 1), (1, 2), (1, 3)];
 
     fn types(lists: &[&[Edge]]) -> Vec<Vec<Edge>> {
@@ -154,7 +215,7 @@ mod tests {
 
     #[test]
     fn clean_ruleset_has_no_issues() {
-        let outcome = compile(2, &types(&[STAR]));
+        let outcome = compile(2, &types(&[PATH_BALL]));
         assert_eq!(outcome.issues, []);
         let ruleset = outcome.ruleset.expect("no errors, so a ruleset");
         assert_eq!(ruleset.len(), 1);
@@ -172,7 +233,7 @@ mod tests {
 
     #[test]
     fn shallow_is_warning_and_kept() {
-        let outcome = compile(2, &types(&[STAR, &[(0, 1)]]));
+        let outcome = compile(2, &types(&[PATH_BALL, &[(0, 1)]]));
         assert_eq!(found(&outcome), [(IssueCode::ShallowType, Some(1))]);
         assert!(!outcome.has_errors());
         let ruleset = outcome.ruleset.expect("warnings only");
@@ -184,7 +245,11 @@ mod tests {
     fn exact_duplicates_merged_keeping_first() {
         let outcome = compile(
             2,
-            &types(&[STAR, &[(3, 1), (2, 1), (1, 0)], &[(1, 3), (0, 1), (2, 1)]]),
+            &types(&[
+                PATH_BALL,
+                &[(2, 4), (1, 3), (0, 2), (0, 1)],
+                &[(1, 0), (4, 2), (3, 1), (2, 0)],
+            ]),
         );
         assert_eq!(
             found(&outcome),
@@ -200,9 +265,9 @@ mod tests {
 
     #[test]
     fn isomorphic_duplicates_merged_keeping_first() {
-        //! The star drawn with a different center number is the same shape.
-        let relabeled: &[Edge] = &[(0, 2), (2, 1), (2, 3)];
-        let outcome = compile(2, &types(&[STAR, relabeled, STAR]));
+        //! The path ball with its arms numbered differently is the same shape.
+        let relabeled: &[Edge] = &[(0, 3), (3, 4), (0, 1), (1, 2)];
+        let outcome = compile(2, &types(&[PATH_BALL, relabeled, PATH_BALL]));
         assert_eq!(
             found(&outcome),
             [
@@ -217,8 +282,7 @@ mod tests {
 
     #[test]
     fn index_of_finds_any_isomorphic_copy() {
-        let path_ball: &[Edge] = &[(0, 1), (0, 2), (1, 3), (2, 4)];
-        let ruleset = compile(2, &types(&[STAR, path_ball]))
+        let ruleset = compile(2, &types(&[STAR, PATH_BALL]))
             .ruleset
             .expect("clean");
         let relabeled = CompiledBall::from_checked_edges(&[(0, 3), (3, 4), (0, 1), (1, 2)]);
@@ -255,6 +319,64 @@ mod tests {
     fn max_root_degree_is_largest_over_types() {
         let outcome = compile(1, &types(&[&[(0, 1)], &[(0, 1), (0, 2), (0, 3)]]));
         assert_eq!(outcome.ruleset.expect("clean").max_root_degree(), 3);
+    }
+
+    #[test]
+    fn pruned_types_are_warned_about_and_kept_in_the_ruleset() {
+        //! Type 2 is a leaf beside an arm: its leaf needs a root of degree 1,
+        //! which only the star (type 1) has, and round 1 removes the star.
+        let leaf_and_arm: &[Edge] = &[(0, 1), (0, 2), (2, 3)];
+        let outcome = compile(2, &types(&[PATH_BALL, STAR, leaf_and_arm]));
+        assert_eq!(
+            found(&outcome),
+            [
+                (IssueCode::PrunedType, Some(1)),
+                (IssueCode::PrunedType, Some(2))
+            ]
+        );
+        assert_eq!(
+            outcome.issues[1].message,
+            "round 2: node 1 at depth 1 sees a radius-1 ball that only type 1 had around its \
+             root, removed in an earlier round"
+        );
+        let ruleset = outcome.ruleset.expect("warnings only");
+        assert_eq!(ruleset.len(), 3);
+        assert_eq!(ruleset.pruning().kept(), [0]);
+    }
+
+    #[test]
+    fn pruning_names_types_by_file_position() {
+        //! A duplicate first shifts every later type's index by one.
+        let leaf_and_arm: &[Edge] = &[(0, 1), (0, 2), (2, 3)];
+        let outcome = compile(2, &types(&[PATH_BALL, PATH_BALL, STAR, leaf_and_arm]));
+        assert_eq!(
+            found(&outcome),
+            [
+                (IssueCode::ExactDuplicate, Some(1)),
+                (IssueCode::PrunedType, Some(2)),
+                (IssueCode::PrunedType, Some(3))
+            ]
+        );
+        assert!(outcome.issues[1].message.contains("that no type has"));
+        assert!(outcome.issues[2].message.contains("only type 2 had"));
+    }
+
+    #[test]
+    fn nothing_left_is_unrealizable() {
+        let outcome = compile(2, &types(&[STAR]));
+        assert_eq!(
+            found(&outcome),
+            [
+                (IssueCode::PrunedType, Some(0)),
+                (IssueCode::Unrealizable, None)
+            ]
+        );
+        assert_eq!(
+            outcome.issues[0].message,
+            "round 1: node 1 at depth 1 sees a radius-1 ball that no type has around its root"
+        );
+        let ruleset = outcome.ruleset.expect("warnings only: the file is fine");
+        assert_eq!(ruleset.pruning().kept(), [] as [usize; 0]);
     }
 
     #[test]

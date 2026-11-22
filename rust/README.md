@@ -47,3 +47,15 @@ buffers between calls) and counts every ball shape in a graph (`ball_census`). F
 `extract.ruleset_from_graph(G, r)` turns any NetworkX graph into a ruleset with counts, and
 `extract.extract_ball(G, node, r)` shows one ball. `tests/test_extract.py` checks extraction
 against `networkx.ego_graph`.
+
+## Pruning
+
+`core/src/prune.rs` removes ball types that no graph can contain, every time a ruleset compiles.
+A node at depth d inside a type sees its whole radius-(r − d) ball, so some type must cut down to
+exactly that ball at its root; a type with a node no type matches is removed, in rounds, until
+nothing changes. Pruned types stay in the compiled ruleset (indices never shift): `kept_indices`
+lists the survivors, and `compiled.removals(c)` in Python says, for each removed type, the round,
+the node whose sub-ball had no match, that sub-ball, and which removed types used to supply it.
+Compiling reports each removal as a `pruned_type` warning, and `unrealizable` if nothing is left.
+`tests/test_prune.py` checks the result against a direct NetworkX version of the rule, and checks
+that the balls of any real graph are never pruned.

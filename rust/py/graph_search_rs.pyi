@@ -3,8 +3,12 @@
 CanonicalKey = tuple[tuple[int, ...], tuple[tuple[int, int], ...]]
 """(layer_sizes, edges): equal keys mean isomorphic balls, root to root. Hashable."""
 
+Removal = tuple[int, int, int, int, list[tuple[int, int]], list[int]]
+"""(index, round, node, depth, sub_ball_edges, lost_suppliers); see CompiledRuleset.removals."""
+
 class CompiledRuleset:
-    """A compiled ruleset, read-only. Ball indices count distinct types after merging duplicates."""
+    """A compiled ruleset, read-only. Ball indices count distinct types after merging
+    duplicates, pruned or not; ``kept_indices`` lists those that survive pruning."""
 
     @property
     def r(self) -> int: ...
@@ -12,7 +16,13 @@ class CompiledRuleset:
     def source_indices(self) -> list[int]:
         """Position in the file of each distinct ball type."""
     @property
-    def max_root_degree(self) -> int: ...
+    def max_root_degree(self) -> int:
+        """Largest root degree over all types, pruned or not."""
+    @property
+    def kept_indices(self) -> list[int]:
+        """Indices of the types that survive pruning, ascending."""
+    def removals(self) -> list[Removal]:
+        """Every type pruning removed, by round, then index. compiled.removals wraps these."""
     def __len__(self) -> int: ...
     def shallow_indices(self) -> list[int]: ...
     def layers(self, index: int) -> list[list[int]]: ...
@@ -21,7 +31,8 @@ class CompiledRuleset:
     def edges(self, index: int) -> list[tuple[int, int]]: ...
     def canonical_key(self, index: int) -> CanonicalKey: ...
     def index_of(self, edges: list[tuple[int, int]]) -> int | None:
-        """Index of the type isomorphic to this ball, or None. ValueError if not a valid ball."""
+        """Index of the type isomorphic to this ball (pruned or not), or None.
+        ValueError if not a valid ball."""
 
 def compile_ruleset(
     r: int, types: list[list[tuple[int, int]]]

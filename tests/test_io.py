@@ -62,6 +62,9 @@ COMPILE_FIXTURES = [
     ("exact_duplicate.json", IssueCode.EXACT_DUPLICATE),
     ("isomorphic_duplicate.json", IssueCode.ISOMORPHIC_DUPLICATE),
     ("two_bad_types.json", IssueCode.SELF_LOOP),  # and NODE_GAP at index 2
+    ("pruned_type.json", IssueCode.PRUNED_TYPE),  # two types, in rounds 1 and 2
+    ("unrealizable.json", IssueCode.PRUNED_TYPE),  # the only type...
+    ("unrealizable.json", IssueCode.UNREALIZABLE),  # ...so nothing is left
 ]
 
 EXAMPLE_RULESETS = ["star-only.json", "path-ball-r2.json", "dimer-r1.json"]
@@ -114,7 +117,7 @@ def test_fixture_loads_with_warning(fixtures_dir, filename, code):
     assert code in report.codes()
 
 
-# --- Graph problems: Python loads them, Rust rejects them ---------------------
+# --- Graph problems: Python loads them, Rust reports them ---------------------
 
 @pytest.mark.parametrize("filename, code", COMPILE_FIXTURES)
 def test_compile_fixture_loads_in_python(fixtures_dir, filename, code):
@@ -140,7 +143,10 @@ def test_types_kept_as_written(fixtures_dir):
     """exact_duplicate.json keeps both types, in order and as written."""
     ruleset, _ = load_ruleset(fixtures_dir / "exact_duplicate.json")
     assert [t.label for t in ruleset] == ["a", "b"]
-    assert [t.edges for t in ruleset] == [((0, 1), (1, 2)), ((2, 1), (0, 1))]
+    assert [t.edges for t in ruleset] == [
+        ((0, 1), (0, 2), (1, 3), (2, 4)),
+        ((2, 4), (3, 1), (0, 2), (1, 0)),
+    ]
 
 
 # --- Clean loads ----------------------------------------------------------------

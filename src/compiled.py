@@ -11,12 +11,14 @@ Typical use::
     if compiled is not None:
         compiled.layers(0)
         compiled.index_of([(0, 2), (2, 1), (2, 3)])  # 0: same shape as type 0
+        compiled.kept_indices                         # []: pruning removed it
+        removals(compiled)                            # why
 """
 
 from __future__ import annotations
 
 from os import PathLike
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from balltype import BallType
 from report import Issue, IssueCode, LoadReport
@@ -27,6 +29,34 @@ if TYPE_CHECKING:
     from graph_search_rs import CanonicalKey, CompiledRuleset
 
 RawIssue = tuple[str, str, int | None]
+
+
+class Removal(NamedTuple):
+    """One ball type removed by visible sub-ball pruning, and why.
+
+    Some node of the removed type, at ``depth`` from its root, sees its whole
+    ball of radius ``radius = r - depth`` inside the type. In any graph, that
+    node's own radius-r ball must be a type that cuts down to ``sub_ball``,
+    and no remaining type does.
+    """
+
+    ball_index: int
+    """Index in the compiled ruleset, as ``layers`` and ``edges`` take."""
+    type_index: int
+    """Position in the file, as in the PRUNED_TYPE issue."""
+    round: int
+    """The pruning round that removed it, from 1."""
+    node: int
+    """The removed type's node whose sub-ball no remaining type has."""
+    depth: int
+    """That node's distance from the root."""
+    radius: int
+    """The sub-ball's radius, r - depth."""
+    sub_ball: BallType
+    """The sub-ball, numbered from ``node`` as root 0."""
+    lost_suppliers: tuple[int, ...]
+    """Ball indices of the types that had this sub-ball at their root, all
+    removed in earlier rounds. Empty in round 1: no type ever had it."""
 
 
 def compile_ruleset(
@@ -81,6 +111,23 @@ def load_and_compile(
     if ruleset is None:
         return None, report
     return compile_ruleset(ruleset, report, strict=strict)
+
+
+def removals(compiled: CompiledRuleset) -> list[Removal]:
+    """Every type pruning removed from ``compiled``, by round, then index."""
+    return [
+        Removal(
+            ball_index=index,
+            type_index=compiled.source_indices[index],
+            round=round_,
+            node=node,
+            depth=depth,
+            radius=compiled.r - depth,
+            sub_ball=BallType.from_edges(edges),
+            lost_suppliers=tuple(lost),
+        )
+        for index, round_, node, depth, edges, lost in compiled.removals()
+    ]
 
 
 def canonical_key(ball: BallType) -> CanonicalKey:

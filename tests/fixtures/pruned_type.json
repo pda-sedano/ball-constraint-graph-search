@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "name": "pruned in two rounds",
+  "r": 2,
+  "types": [
+    {"label": "path seen from the middle", "edges": [[0, 1], [0, 2], [1, 3], [2, 4]]},
+    {"label": "star from the design doc, removed in round 1", "edges": [[0, 1], [1, 2], [1, 3]]},
+    {"label": "leaf beside an arm, removed in round 2", "edges": [[0, 1], [0, 2], [2, 3]]}
+  ]
+}

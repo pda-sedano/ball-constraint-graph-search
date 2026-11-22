@@ -4,12 +4,16 @@ use std::collections::HashMap;
 
 use crate::ball::CompiledBall;
 use crate::canonical::CanonicalKey;
+use crate::prune::{prune, Pruning};
 
 /// The ball types of a ruleset with no compile errors, duplicates merged.
 ///
-/// Each kept ball remembers its position in the ruleset as written, so
-/// anything reported later (pruning, sampling statistics) can point back at
-/// the file. Step 4 adds the pruned list beside this one.
+/// Each ball remembers its position in the ruleset as written, so anything
+/// reported later (pruning, sampling statistics) can point back at the file.
+///
+/// Both lists are kept: `balls` is every distinct type as written, pruned or
+/// not, and [`Self::pruning`] says which of them survive visible sub-ball
+/// pruning and why the rest were removed. Indices always count `balls`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledRuleset {
     r: u32,
@@ -19,11 +23,14 @@ pub struct CompiledRuleset {
     source_indices: Vec<usize>,
     /// Canonical key of each ball to its index in `balls`.
     index: HashMap<CanonicalKey, usize>,
+    /// Which balls survive pruning, computed once here.
+    pruning: Pruning,
 }
 
 impl CompiledRuleset {
-    /// Only `compile` builds these. Panics if the two vectors differ in
-    /// length, or if two balls are isomorphic (compile merges those first).
+    /// Only `compile` builds these. Runs pruning. Panics if the two vectors
+    /// differ in length, or if two balls are isomorphic (compile merges those
+    /// first).
     pub(crate) fn new(r: u32, balls: Vec<CompiledBall>, source_indices: Vec<usize>) -> Self {
         assert_eq!(
             balls.len(),
@@ -38,11 +45,13 @@ impl CompiledRuleset {
                 "balls {previous:?} and {i} are isomorphic"
             );
         }
+        let pruning = prune(r, &balls);
         Self {
             r,
             balls,
             source_indices,
             index,
+            pruning,
         }
     }
 
@@ -82,14 +91,21 @@ impl CompiledRuleset {
             .collect()
     }
 
+    /// Which types survive visible sub-ball pruning, and why the others
+    /// were removed.
+    pub fn pruning(&self) -> &Pruning {
+        &self.pruning
+    }
+
     /// The index of the ball type with this canonical key, if any: the
     /// lookup that checks a core node, whose ball must match a type exactly.
+    /// Pruned types are found too; [`Pruning::is_kept`] tells them apart.
     pub fn index_of(&self, key: &CanonicalKey) -> Option<usize> {
         self.index.get(key).copied()
     }
 
-    /// Largest root degree over all types: the sampler's hard degree cap.
-    /// 0 for an empty ruleset.
+    /// Largest root degree over all types, pruned or not. 0 for an empty
+    /// ruleset. The sampler's degree cap should come from the kept types.
     pub fn max_root_degree(&self) -> usize {
         self.balls
             .iter()

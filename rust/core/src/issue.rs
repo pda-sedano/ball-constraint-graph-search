@@ -44,11 +44,19 @@ pub enum IssueCode {
     ExactDuplicate,
     /// Same ball up to root-preserving isomorphism, edges written differently.
     IsomorphicDuplicate,
+
+    // Pruning (prune)
+    /// Removed by visible sub-ball pruning: no graph can contain it.
+    PrunedType,
+    /// Pruning removed every type: no graph satisfies the ruleset. A warning,
+    /// not an error, because the file itself is fine and the compiled
+    /// ruleset still says which types were removed and why.
+    Unrealizable,
 }
 
 impl IssueCode {
     /// Every code, for the parity test with Python.
-    pub const ALL: [IssueCode; 8] = [
+    pub const ALL: [IssueCode; 10] = [
         IssueCode::SelfLoop,
         IssueCode::RepeatedEdge,
         IssueCode::NodeGap,
@@ -57,6 +65,8 @@ impl IssueCode {
         IssueCode::ShallowType,
         IssueCode::ExactDuplicate,
         IssueCode::IsomorphicDuplicate,
+        IssueCode::PrunedType,
+        IssueCode::Unrealizable,
     ];
 
     /// The string value of the matching Python `IssueCode` member.
@@ -70,6 +80,8 @@ impl IssueCode {
             IssueCode::ShallowType => "shallow_type",
             IssueCode::ExactDuplicate => "exact_duplicate",
             IssueCode::IsomorphicDuplicate => "isomorphic_duplicate",
+            IssueCode::PrunedType => "pruned_type",
+            IssueCode::Unrealizable => "unrealizable",
         }
     }
 
@@ -81,9 +93,11 @@ impl IssueCode {
             | IssueCode::NodeGap
             | IssueCode::Disconnected
             | IssueCode::BeyondRadius => Severity::Error,
-            IssueCode::ShallowType | IssueCode::ExactDuplicate | IssueCode::IsomorphicDuplicate => {
-                Severity::Warning
-            }
+            IssueCode::ShallowType
+            | IssueCode::ExactDuplicate
+            | IssueCode::IsomorphicDuplicate
+            | IssueCode::PrunedType
+            | IssueCode::Unrealizable => Severity::Warning,
         }
     }
 }

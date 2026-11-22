@@ -16,6 +16,10 @@ use pyo3::types::PyTuple;
 /// One issue as Python receives it: (code, message, type_index).
 type PyIssue = (&'static str, String, Option<usize>);
 
+/// One pruning removal as Python receives it:
+/// (index, round, node, depth, sub_ball_edges, lost_suppliers).
+type PyRemoval = (usize, usize, Node, u32, Vec<Edge>, Vec<usize>);
+
 /// A compiled ruleset, read-only from Python.
 ///
 /// Ball indices count distinct types after duplicates are merged; use
@@ -50,9 +54,10 @@ impl PyCompiledRuleset {
 
     fn __repr__(&self) -> String {
         format!(
-            "CompiledRuleset(r={}, ball_types={})",
+            "CompiledRuleset(r={}, ball_types={}, kept={})",
             self.inner.r(),
-            self.inner.len()
+            self.inner.len(),
+            self.inner.pruning().kept().len()
         )
     }
 
@@ -62,10 +67,39 @@ impl PyCompiledRuleset {
         self.inner.source_indices().to_vec()
     }
 
-    /// Largest root degree over all types.
+    /// Largest root degree over all types, pruned or not.
     #[getter]
     fn max_root_degree(&self) -> usize {
         self.inner.max_root_degree()
+    }
+
+    /// Indices of the types that survive pruning, ascending.
+    #[getter]
+    fn kept_indices(&self) -> Vec<usize> {
+        self.inner.pruning().kept().to_vec()
+    }
+
+    /// Every type pruning removed, by round, then index: `(index, round,
+    /// node, depth, sub_ball_edges, lost_suppliers)`. `node` (at `depth`) is
+    /// the removed type's node whose radius-(r - depth) ball no remaining
+    /// type has; `sub_ball_edges` is that ball, numbered from the node as 0;
+    /// `lost_suppliers` are the types that had it, removed in earlier rounds.
+    fn removals(&self) -> Vec<PyRemoval> {
+        self.inner
+            .pruning()
+            .removed()
+            .iter()
+            .map(|removal| {
+                (
+                    removal.index,
+                    removal.round,
+                    removal.node,
+                    removal.depth,
+                    removal.sub_ball.edges().to_vec(),
+                    removal.lost_suppliers.clone(),
+                )
+            })
+            .collect()
     }
 
     /// Indices of types with depth less than r.
@@ -98,7 +132,8 @@ impl PyCompiledRuleset {
     }
 
     /// Index of the ball type isomorphic to the ball with these edges, or
-    /// None. Raises ValueError if the edges are not a valid ball.
+    /// None. Pruned types are found too. Raises ValueError if the edges are
+    /// not a valid ball.
     fn index_of(&self, edges: Vec<Edge>) -> PyResult<Option<usize>> {
         Ok(self
             .inner

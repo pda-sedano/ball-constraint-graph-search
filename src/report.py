@@ -58,6 +58,10 @@ class IssueCode(Enum):
     EXACT_DUPLICATE = "exact_duplicate"  # identical normalized edge lists
     ISOMORPHIC_DUPLICATE = "isomorphic_duplicate"
 
+    # Pruning
+    PRUNED_TYPE = "pruned_type"  # removed by visible sub-ball pruning: no graph can contain it
+    UNREALIZABLE = "unrealizable"  # pruning removed every type
+
 
 SEVERITY: dict[IssueCode, Severity] = {
     IssueCode.MALFORMED_JSON: Severity.ERROR,
@@ -77,6 +81,10 @@ SEVERITY: dict[IssueCode, Severity] = {
     IssueCode.SHALLOW_TYPE: Severity.WARNING,
     IssueCode.EXACT_DUPLICATE: Severity.WARNING,
     IssueCode.ISOMORPHIC_DUPLICATE: Severity.WARNING,
+    # Warnings, not errors: the file is fine, and the compiled ruleset says
+    # which types were removed and why.
+    IssueCode.PRUNED_TYPE: Severity.WARNING,
+    IssueCode.UNREALIZABLE: Severity.WARNING,
 }
 
 # The codes Rust reports when compiling: exactly those in rust/core/src/issue.rs.
@@ -90,6 +98,8 @@ COMPILE_CODES: frozenset[IssueCode] = frozenset({
     IssueCode.SHALLOW_TYPE,
     IssueCode.EXACT_DUPLICATE,
     IssueCode.ISOMORPHIC_DUPLICATE,
+    IssueCode.PRUNED_TYPE,
+    IssueCode.UNREALIZABLE,
 })
 
 
