@@ -9,17 +9,27 @@
 //!   producing a [`CompiledRuleset`] that looks types up by canonical key.
 //! - [`issue`]: issue codes, which mirror Python's `report.IssueCode`.
 //!
-//! Later steps add ball extraction, pruning, the embedding check, the
-//! validity checker and the sampler.
+//! And the graph the search works on:
+//!
+//! - [`graph`]: [`Graph`], fixed-size adjacency rows edited in place.
+//! - [`extract`]: the radius-r ball around a node ([`BallExtractor`]), and
+//!   [`ball_census()`], every ball shape in a reference graph with counts.
+//!
+//! Later steps add pruning, the embedding check, the validity checker and
+//! the sampler.
 
 pub mod ball;
 pub mod canonical;
 pub mod compile;
+pub mod extract;
+pub mod graph;
 pub mod issue;
 pub mod ruleset;
 
 pub use ball::{check_structure, CompiledBall, Edge, Node};
 pub use canonical::{CanonicalForm, CanonicalKey};
 pub use compile::{compile, CompileOutcome};
+pub use extract::{ball_census, BallExtractor, CensusEntry, VisibleBall};
+pub use graph::{Graph, GraphError};
 pub use issue::{Issue, IssueCode, Severity};
 pub use ruleset::CompiledRuleset;

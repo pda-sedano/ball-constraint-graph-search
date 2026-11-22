@@ -1,8 +1,9 @@
 """Bridge to the Rust core: compile a loaded ruleset and fold Rust's issues into the report.
 
 Needs the ``graph_search_rs`` extension, built from ``rust/py`` (see
-rust/README.md). This is the only module that imports it, and only when
-compiling, so loading, checking and drawing rulesets work without it.
+rust/README.md). This module and extract.py are the only ones that import
+it, and only when called, so loading, checking and drawing rulesets work
+without it.
 
 Typical use::
 

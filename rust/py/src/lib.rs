@@ -6,7 +6,8 @@
 //! turns them into Python `Issue` objects.
 
 use graph_search_core::{
-    compile, CanonicalKey, CompiledBall, CompiledRuleset, Edge, Issue, IssueCode,
+    ball_census as census, compile, BallExtractor, CanonicalKey, CompiledBall, CompiledRuleset,
+    Edge, Graph, Issue, IssueCode, Node,
 };
 use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
@@ -161,6 +162,58 @@ fn canonical_key<'py>(py: Python<'py>, edges: Vec<Edge>) -> PyResult<Bound<'py, 
     key_to_py(py, ball_from_edges(&edges)?.canonical_key())
 }
 
+/// A reference graph on nodes `0..num_nodes`, degree cap from its own edges,
+/// or ValueError naming the problem.
+fn reference_graph(num_nodes: usize, edges: &[Edge]) -> PyResult<Graph> {
+    Graph::from_edges_with_own_cap(num_nodes, edges)
+        .map_err(|e| PyValueError::new_err(format!("invalid graph: {e}")))
+}
+
+/// The radius-r ball around `center` in the graph on nodes `0..num_nodes`
+/// with these edges: `(nodes, depths, edges)`, where `nodes[i]` is the graph
+/// node numbered i in the ball (the center is 0, then BFS order), `depths[i]`
+/// its distance from the center, and `edges` the induced edges in ball
+/// numbering. Raises ValueError for an invalid graph or center.
+#[pyfunction]
+fn extract_ball(
+    num_nodes: usize,
+    edges: Vec<Edge>,
+    center: Node,
+    r: u32,
+) -> PyResult<(Vec<Node>, Vec<u32>, Vec<Edge>)> {
+    let graph = reference_graph(num_nodes, &edges)?;
+    if center as usize >= num_nodes {
+        return Err(PyValueError::new_err(format!(
+            "center {center} is out of range for {num_nodes} nodes"
+        )));
+    }
+    let ball = BallExtractor::new().extract(&graph, center, r);
+    Ok((
+        ball.nodes().to_vec(),
+        ball.depths().to_vec(),
+        ball.edges().to_vec(),
+    ))
+}
+
+/// Every node's radius-r ball, grouped by shape: `(canonical_edges, count,
+/// example_center)` per shape, most common first, ties by canonical key.
+/// Raises ValueError for an invalid graph.
+#[pyfunction]
+fn ball_census(
+    num_nodes: usize,
+    edges: Vec<Edge>,
+    r: u32,
+) -> PyResult<Vec<(Vec<Edge>, usize, Node)>> {
+    let graph = reference_graph(num_nodes, &edges)?;
+    Ok(census(&graph, r)
+        .into_iter()
+        .map(|entry| {
+            let edges = entry.ball.canonical_key().edges().to_vec();
+            (edges, entry.count, entry.example_center)
+        })
+        .collect())
+}
+
 /// Every code compiling can report, with its severity: `(code, severity)` pairs.
 /// Python's tests compare these with `report.COMPILE_CODES` and `report.SEVERITY`.
 #[pyfunction]
@@ -176,6 +229,8 @@ fn graph_search_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCompiledRuleset>()?;
     m.add_function(wrap_pyfunction!(compile_ruleset, m)?)?;
     m.add_function(wrap_pyfunction!(canonical_key, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_ball, m)?)?;
+    m.add_function(wrap_pyfunction!(ball_census, m)?)?;
     m.add_function(wrap_pyfunction!(issue_codes, m)?)?;
     Ok(())
 }

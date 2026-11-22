@@ -23,11 +23,11 @@ Python is the front end and Rust is the core. They meet at one call that compile
 | Analysis and drawing | Python | Results files, statistics, drawings of ball types and small graphs |
 | Test oracle | Python | A slow NetworkX checker for n up to about 10, run only in tests against Rust |
 
-**Boundary rule.** Python checks only what it takes to hand the data to Rust: required keys, value types, and that every edge is a pair of non-negative integers. Rust checks everything about the graphs themselves.
+**Boundary rule.** Python checks only what it takes to hand the data to Rust: required keys, value types, and that every edge is a pair of integers from 0 to 2^32 − 1, the range of Rust's node type. Rust checks everything about the graphs themselves.
 
 **One report.** Compiling returns every issue, not just the first, using the same issue codes as Python's `IssueCode`. Python adds them to the load report. A test asserts that the two sets of codes match.
 
-**Packaging.** A Cargo workspace holds a core crate in plain Rust and a thin bindings crate built with PyO3 and maturin. Python imports the bindings as `ballsearch._core`. A command-line crate can be added later for long unattended runs.
+**Packaging.** A Cargo workspace holds a core crate in plain Rust and a thin bindings crate built with PyO3 and maturin. The bindings are their own Python package, built by maturin and imported as `graph_search_rs`, so the Python modules keep their flat layout. A command-line crate can be added later for long unattended runs.
 
 **Why Rust now.** Per-node work in a recheck was timed in each option: take the radius-2 ball, then fingerprint it. The graph was random 3-regular with 4,000 nodes, and all four gave identical output.
 
@@ -109,7 +109,7 @@ Conventions:
 
 Checks on load, each in one place:
 
-- **Python, reading the file:** required keys are present and no others, `format` is 1, values have the right JSON types, and every edge is a pair of non-negative integers.
+- **Python, reading the file:** required keys are present and no others, `format` is 1, values have the right JSON types, and every edge is a pair of integers from 0 to 2^32 − 1.
 - **Rust, compiling:** each type has no self-loops or repeated edges, nodes numbered 0 to k − 1 with no gaps, is connected, and has every node within distance r of the root.
 - **Rust, compiling:** depth is exactly r. Shallower types get a warning, since they only apply when n equals their size.
 - **Rust, compiling:** exact and isomorphic duplicates are merged, with a warning.
@@ -120,6 +120,40 @@ Three ways to produce a ruleset, all writing this same format:
 1. **By hand.** Fine for small cases. A function that draws each type by layer helps confirm the file says what was meant.
 2. **From a reference graph.** Collect every ball that occurs, with its count. The counts are saved as metadata for comparing samples against later.
 3. **By enumeration, later.** Generate every ball up to a degree bound and remove forbidden ones. A search over rulesets needs this. It is realistic only for small r and small degree.
+
+## Graph file format
+
+Graphs are saved as safetensors files: two raw arrays plus a small metadata map, read and written efficiently from both Rust and Python. There is one format for every graph the project saves, from checker inputs to million-node samples.
+
+| Part | Name | Contents |
+| --- | --- | --- |
+| Tensor | `edges` | Shape (m, 2), `uint32`. One row per edge, normalized `(min, max)` |
+| Tensor | `open` | Shape (k,), `uint32`. The open set, sorted. Empty for closed graphs and reference graphs |
+| Metadata | `format` | Format version, `"1"` |
+| Metadata | `num_nodes` | Node count. Explicit, since a graph can have isolated nodes |
+| Metadata | `metadata` | A JSON string: the ruleset name, the source, and for samples |
+
+As with rulesets, Python checks the format (tensor names, dtypes and shapes, metadata keys, node ids below `num_nodes`) and Rust checks the graph (self-loops, repeated edges, the degree cap). Zero-length arrays are valid, so an empty open set or an edgeless graph needs no special case.
+
+**Why safetensors.** Measured on a graph with 1,000,000 nodes and 1.5 million edges, read and written from Python:
+
+| Format | File size | Write | Read | Peak memory reading |
+| --- | --- | --- | --- | --- |
+| JSON | 23.7 MB | 1.7 s | 3.6 s | 252 MB |
+| NumPy `.npz`, uncompressed | 12.0 MB | 0.01 s | 0.01 s | 13 MB |
+| safetensors | 12.0 MB | 0.004 s | 0.003 s | 12 MB |
+
+The file is an 8-byte length, a JSON header giving each array's dtype, shape and byte offsets, then the raw little-endian bytes. The reference implementation is the Rust `safetensors` crate (Apache-2.0, depends only on serde), and the Python package loads straight into NumPy. Rust read the same million-node file in 21 ms, and files round-trip between the two languages.
+
+Alternatives ruled out:
+
+- **JSON:** about 300 times slower to read and 20 times the memory, since every integer becomes a Python object.
+- **NumPy `.npz`:** as fast, but defined by NumPy, with Python-literal headers inside a zip archive; Rust support is through community crates.
+- **Apache Arrow:** heavy dependencies on both sides, and arrays of different lengths do not fit one table.
+- **HDF5:** fits the data well, but the Rust crate needs the C HDF5 library.
+- **A second, JSON encoding for small hand-made graphs:** dropped. Writing a graph in Python is just as short and is checked at once, and the checker's hand cases read best as literals beside their assertions.
+
+**Limits.** No built-in compression: about 12 MB per million-node sample, roughly halved by zstd if runs need archiving. Each file is written whole, so samples are one file each; if a run produces thousands, revisit one file per run. Python's `safetensors` package needs NumPy, which becomes a required dependency.
 
 ## Pre-checks before searching
 
@@ -152,9 +186,9 @@ Step 4 is what makes the result exact. Ties come either from real symmetry, wher
 
 Implementations:
 
-- **Main path: Rust.** Implement steps 1 to 5 directly, or call nauty through C bindings with the distance layers as vertex colors and take its certificate. The key must also include the layer sizes, since a certificate alone does not record which colors were used.
+- **Main path: nauty.** densenauty, called from Rust through the nauty-Traces-sys bindings, with one color per distance layer. A hand-written version of steps 1 to 5 was built first and measured 3 to 10 times slower, so it was removed. The key must also include the layer sizes, since a certificate alone does not record which colors were used.
 - **Cross-check: Python oracle, NetworkX only.** `weisfeiler_lehman_graph_hash` covers steps 1 to 3 without tie-breaking, so non-isomorphic balls can collide. Use it as a bucket key, then confirm with a VF2 isomorphism test that matches nodes on distance.
-- **Trees.** For a ball with no cycles, AHU encoding is exact: each node's code is the sorted tuple of its children's codes.
+- **Trees.** For a ball with no cycles, AHU encoding is exact: each node's code is the sorted tuple of its children's codes. Not implemented: nauty handles trees. If very large symmetric balls ever dominate profiling, nauty's Traces is the faster switch.
 
 The two implementations share no code. Agreement on thousands of random balls is the test.
 
@@ -292,14 +326,14 @@ Sampler ground truth:
 Each step is testable before the next one exists, and steps 1 to 3 are already useful on their own.
 
 1. **Ruleset files, Python (built).** JSON loader and saver, format checks only, issue report, round trip. Structural checks move out to step 2.
-2. **Workspace and compiled ruleset, Rust.** Cargo workspace with core and PyO3 bindings crates, built by maturin. Compiling runs every graph check, returns all issues with Python's codes, and stores layers and degrees.
-3. **Canonical form, Rust.** Distance-colored refinement with tie-breaking, or nauty through C bindings. Compiling now merges isomorphic duplicates. Python oracle: NetworkX hash-plus-VF2.
-4. **Graph and ball extraction, Rust.** Flat adjacency arrays sized by the largest root degree in L. Visible r-ball of a node with distances, plus "all balls in a reference graph", exposed to Python.
+2. **Workspace and compiled ruleset, Rust (built).** Cargo workspace with core and PyO3 bindings crates, built by maturin. Compiling runs every graph check, returns all issues with Python's codes, and stores layers and degrees.
+3. **Canonical form, Rust (built).** nauty's densenauty through the nauty-Traces-sys bindings, colored by distance from the root. Compiling now merges isomorphic duplicates. Python oracle: NetworkX hash-plus-VF2.
+4. **Graph and ball extraction, Rust (built).** Flat adjacency rows sized by the largest root degree in L (a reference graph uses its own), with add, remove and has-edge. Visible r-ball of a node with distances, plus "all balls in a reference graph" as a census with counts. Python gets ruleset\_from\_graph for NetworkX graphs and a single-ball extractor; the mutable graph stays in Rust until the sampler.
 5. **Pruning, Rust.** Visible sub-ball check on L, with a report.
 6. **Embedding check, Rust.** Backtracking matcher with the distance-window and closed-degree rules, memoized.
-7. **Validity checker, Rust, plus the Python oracle checker.** Classification, per-node check, report. The oracle is a slow NetworkX version for n up to about 10, used only in tests.
-8. **Enumeration baseline.** All valid graphs at very small n, from NetworkX's graph atlas run through the Rust checker, for ground truth.
-9. **Sampler, version 1, Rust.** One chain, closed mode, full recheck. Samples go to a results file of edge list, open set, |Aut| and metadata, which Python reads for analysis and drawing.
+7. **Validity checker, Rust, plus the Python oracle checker.** Classification, per-node check, report. The oracle is a slow NetworkX version for n up to about 10, used only in tests. Introduces the graph file format; the hand cases are literals in the tests, not files.
+8. **Enumeration baseline.** All valid graphs at very small n, run through the Rust checker, for ground truth. NetworkX's graph atlas stops at 7 nodes; nauty's geng (connected only with -c, degree cap with -D) goes much further, read from its graph6 output.
+9. **Sampler, version 1, Rust.** One chain, closed mode, full recheck. Each sample is saved in the graph file format, with |Aut| and the chain step in its metadata, for Python to read for analysis and drawing.
 
 After step 4 a ruleset can be extracted from any graph and round-tripped through a file.
 

@@ -31,5 +31,15 @@ def compile_ruleset(
 def canonical_key(edges: list[tuple[int, int]]) -> CanonicalKey:
     """Canonical key of the ball with these edges. ValueError if not a valid ball."""
 
+def extract_ball(
+    num_nodes: int, edges: list[tuple[int, int]], center: int, r: int
+) -> tuple[list[int], list[int], list[tuple[int, int]]]:
+    """The radius-r ball around center: (nodes, depths, edges) in ball numbering. ValueError if invalid."""
+
+def ball_census(
+    num_nodes: int, edges: list[tuple[int, int]], r: int
+) -> list[tuple[list[tuple[int, int]], int, int]]:
+    """Every node's ball grouped by shape: (canonical_edges, count, example_center), most common first."""
+
 def issue_codes() -> list[tuple[str, str]]:
     """Every code compiling can report, as (code, severity) pairs."""
