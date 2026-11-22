@@ -85,3 +85,25 @@ sampler will minimize. Only kept types count, so a core node whose ball is a pru
 graph files are read and written by `graph_io.py` (safetensors; needs `numpy` and `safetensors`).
 `tests/test_check.py` compares the checker node by node with a NetworkX oracle in `tests/oracle.py`.
 
+## Enumeration baseline
+
+`core/src/enumeration.rs` reads a list of graphs in graph6 (`core/src/graph6.rs`), the format
+nauty's geng writes, and keeps the ones valid in closed mode, each with its automorphism count
+(`canonical::automorphism_count`, from nauty). It uses `Checker::passes`, which stops at the first
+failing node. From Python, `enumeration.baseline(compiled, max_n)` runs `geng -c` with degrees
+limited to the kept types' root degrees and returns the valid graphs by n, with `numberings`
+(n!/|Aut|), the frequency the sampler should match. geng is found through `$GENG` or `PATH`
+(`brew install nauty`); the geng tests are skipped without it.
+
+Results are cached under `.cache/` at the repository root (or `$BCGS_CACHE`): geng's raw lists in
+`geng/connected_n{n}_deg{lo}-{hi}.g6`, shared by every ruleset, and each ruleset's valid graphs in
+`baselines/{key}/n{n}.json`, where the key hashes r and the ruleset's types (labels and order do
+not matter). A second run reads the JSON and needs neither geng nor its lists. Checking costs about
+5 µs per graph in a release build (`maturin develop --release`), many times slower in a debug build,
+so build release before going past n = 9 or so. `tests/test_enumeration.py` compares the baseline
+with the NetworkX graph atlas up to 7 nodes.
+
+To look at the results, `draw.draw_baseline(b, title="showcase")` draws the valid graphs in a grid
+titled with n and |Aut| (`sizes=[10]` for one n, `limit=None` for all of them; needs the `draw`
+extra). Each panel uses whichever of a Tutte drawing (for 3-connected planar graphs), a circle or a
+few spring layouts has the fewest edge crossings.

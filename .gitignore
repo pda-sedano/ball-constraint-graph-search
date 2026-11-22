@@ -13,3 +13,6 @@ venv
 
 # Rust
 target/
+
+# Enumeration cache (geng lists and baselines)
+.cache/

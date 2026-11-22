@@ -21,10 +21,11 @@
 use std::os::raw::c_int;
 
 use nauty_Traces_sys::{
-    densenauty, empty_graph, optionblk, statsblk, ADDONEEDGE, SETWORDSNEEDED, TRUE,
+    densenauty, empty_graph, optionblk, statsblk, ADDONEEDGE, FALSE, SETWORDSNEEDED, TRUE,
 };
 
 use crate::ball::{Edge, Node};
+use crate::graph::Graph;
 
 /// A canonical key: equal keys mean isomorphic rooted balls.
 ///
@@ -57,6 +58,51 @@ pub struct CanonicalForm {
     /// `labeling[v]` is node v's canonical number. Relabeling the ball's
     /// edges by it gives `key.edges()`.
     pub labeling: Vec<Node>,
+}
+
+/// |Aut| of a whole graph: how many permutations of its nodes preserve every
+/// edge, from nauty. nauty reports it as a double, so it is exact below 2^53;
+/// past that it is the nearest double. 1 for the empty graph.
+pub fn automorphism_count(graph: &Graph) -> f64 {
+    let n = graph.num_nodes();
+    if n == 0 {
+        return 1.0;
+    }
+    let m = SETWORDSNEEDED(n);
+    let mut dense = empty_graph(m, n);
+    for u in 0..n {
+        for &w in graph.neighbors(u as Node) {
+            if u < w as usize {
+                ADDONEEDGE(&mut dense, u, w as usize, m);
+            }
+        }
+    }
+    let mut lab: Vec<c_int> = vec![0; n];
+    let mut ptn: Vec<c_int> = vec![0; n];
+    let mut orbits: Vec<c_int> = vec![0; n];
+    let mut unused = empty_graph(m, n);
+    let mut options = optionblk {
+        getcanon: FALSE,
+        defaultptn: TRUE, // one cell: every node may go anywhere
+        ..optionblk::default()
+    };
+    let mut stats = statsblk::default();
+    // SAFETY: as in `canonical_form`: every buffer has the length nauty
+    // expects for n nodes and m setwords per row.
+    unsafe {
+        densenauty(
+            dense.as_mut_ptr(),
+            lab.as_mut_ptr(),
+            ptn.as_mut_ptr(),
+            orbits.as_mut_ptr(),
+            &mut options,
+            &mut stats,
+            m as c_int,
+            n as c_int,
+            unused.as_mut_ptr(),
+        );
+    }
+    stats.grpsize1 * 10f64.powi(stats.grpsize2)
 }
 
 /// The canonical form of a connected rooted graph, root 0.
@@ -414,5 +460,33 @@ mod tests {
                 assert_eq!(key(&relabel(&edges, n, &mut rng)), original, "{name}");
             }
         }
+    }
+
+    #[test]
+    fn automorphism_counts_of_known_graphs() {
+        use crate::graph::Graph;
+        let graph =
+            |n: usize, edges: &[Edge]| Graph::from_edges_with_own_cap(n, edges).expect("valid");
+        let cycle =
+            |n: usize| -> Vec<Edge> { (0..n as Node).map(|v| (v, (v + 1) % n as Node)).collect() };
+        for n in 3..12 {
+            assert_eq!(
+                automorphism_count(&graph(n, &cycle(n))),
+                2.0 * n as f64,
+                "cycle {n}"
+            );
+        }
+        let path: Vec<Edge> = (1..6).map(|v| (v - 1, v)).collect();
+        assert_eq!(automorphism_count(&graph(6, &path)), 2.0);
+        assert_eq!(
+            automorphism_count(&graph(4, &[(0, 1), (0, 2), (0, 3)])),
+            6.0
+        );
+        let petersen: Vec<Edge> = (0..5)
+            .flat_map(|i| [(i, (i + 1) % 5), (i, i + 5), (i + 5, (i + 2) % 5 + 5)])
+            .collect();
+        assert_eq!(automorphism_count(&graph(10, &petersen)), 120.0);
+        assert_eq!(automorphism_count(&graph(5, &[])), 120.0);
+        assert_eq!(automorphism_count(&Graph::new(0, 0)), 1.0);
     }
 }

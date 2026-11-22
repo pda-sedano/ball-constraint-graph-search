@@ -202,6 +202,31 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The verdict `check(graph, open, max_open).is_valid()` would give, but
+    /// stopping at the first failure: global checks first, then nodes in
+    /// order. For enumerating many graphs, where most fail early.
+    pub fn passes(&mut self, graph: &Graph, open: &[Node], max_open: Option<usize>) -> bool {
+        let n = graph.num_nodes();
+        let mut is_open = vec![false; n];
+        for &v in open {
+            assert!(
+                (v as usize) < n,
+                "open node {v} is out of range for {n} nodes"
+            );
+            is_open[v as usize] = true;
+        }
+        let open_count = is_open.iter().filter(|&&o| o).count();
+        if max_open.is_some_and(|m| open_count > m) || graph.component_count() > 1 {
+            return false;
+        }
+        let distance = graph.distances_from(open);
+        (0..n as Node).all(|v| {
+            self.check_node(graph, &is_open, &distance, v)
+                .outcome
+                .passes()
+        })
+    }
+
     /// Check one node, given every node's open flag and distance to the open
     /// set (`u32::MAX` where none is reachable).
     pub fn check_node(
@@ -364,6 +389,34 @@ mod tests {
                 report.failing()
             );
         }
+    }
+
+    #[test]
+    fn passes_agrees_with_check() {
+        let mut rng = Rng(34);
+        let mut valid = 0;
+        for round in 0..200 {
+            let r = 1 + (round % 3) as u32;
+            let reference = random_graph(30, 40 + rng.below(20), &mut rng);
+            let rules = census_ruleset(&reference, r);
+            let (patch, open, _) = cut_patch(&reference, 15, round % 3, &mut rng);
+            let max_open = match round % 4 {
+                0 => None,
+                1 => Some(open.len().saturating_sub(1)),
+                _ => Some(open.len()),
+            };
+            let closed = round % 5 == 0;
+            let open: &[Node] = if closed { &[] } else { &open };
+            let mut checker = Checker::new(&rules);
+            let full = checker.check(&patch, open, max_open).is_valid();
+            assert_eq!(
+                checker.passes(&patch, open, max_open),
+                full,
+                "round {round}"
+            );
+            valid += full as usize;
+        }
+        assert!(valid > 40, "{valid} valid");
     }
 
     #[test]

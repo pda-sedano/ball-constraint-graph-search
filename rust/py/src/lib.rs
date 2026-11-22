@@ -6,10 +6,11 @@
 //! turns them into Python `Issue` objects.
 
 use graph_search_core::{
-    ball_census as census, compile, BallExtractor, CanonicalKey, CheckReport, Checker,
-    CompiledBall, CompiledRuleset, Edge, EmbedQuery, EmbeddingChecker, Graph, Issue, IssueCode,
-    Node, Outcome,
+    automorphism_count as aut_count, ball_census as census, compile, parse_graph6 as parse,
+    valid_graphs, BallExtractor, CanonicalKey, CheckReport, Checker, CompiledBall, CompiledRuleset,
+    Edge, EmbedQuery, EmbeddingChecker, EnumerationError, Graph, Issue, IssueCode, Node, Outcome,
 };
+use pyo3::exceptions::PyOSError;
 use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
@@ -160,6 +161,27 @@ impl PyCompiledRuleset {
         }
         let inner = Checker::new(&self.inner).check(&graph, &open_nodes, max_open);
         Ok(PyCheckReport { inner })
+    }
+
+    /// The enumeration baseline for one graph6 file: every graph in it,
+    /// checked in closed mode. Returns `(candidates, valid)` where `valid`
+    /// lists `(graph6, automorphisms)` for each valid graph, in file order.
+    /// Raises OSError if the file cannot be read and ValueError for a line
+    /// that is not graph6.
+    fn valid_graph6(&self, path: std::path::PathBuf) -> PyResult<(usize, Vec<(String, f64)>)> {
+        let file = std::fs::File::open(&path)
+            .map_err(|e| PyOSError::new_err(format!("{}: {e}", path.display())))?;
+        let found =
+            valid_graphs(&self.inner, std::io::BufReader::new(file)).map_err(|e| match e {
+                EnumerationError::Io(e) => PyOSError::new_err(format!("{}: {e}", path.display())),
+                other => PyValueError::new_err(format!("{}: {other}", path.display())),
+            })?;
+        let valid = found
+            .valid
+            .into_iter()
+            .map(|g| (g.graph6, g.automorphisms))
+            .collect();
+        Ok((found.candidates, valid))
     }
 
     /// The embedding check, for each of `centers` in the patch on nodes
@@ -403,6 +425,20 @@ fn ball_census(
         .collect())
 }
 
+/// The node count and edges of one graph6 line. Raises ValueError if it is
+/// not graph6.
+#[pyfunction]
+fn parse_graph6(line: &str) -> PyResult<(usize, Vec<Edge>)> {
+    parse(line.trim().as_bytes()).map_err(|e| PyValueError::new_err(format!("not graph6: {e}")))
+}
+
+/// |Aut| of the graph on nodes `0..num_nodes` with these edges, from nauty.
+/// Exact below 2^53. Raises ValueError for an invalid graph.
+#[pyfunction]
+fn automorphism_count(num_nodes: usize, edges: Vec<Edge>) -> PyResult<f64> {
+    Ok(aut_count(&reference_graph(num_nodes, &edges)?))
+}
+
 /// Every code compiling can report, with its severity: `(code, severity)` pairs.
 /// Python's tests compare these with `report.COMPILE_CODES` and `report.SEVERITY`.
 #[pyfunction]
@@ -422,5 +458,7 @@ fn graph_search_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(extract_ball, m)?)?;
     m.add_function(wrap_pyfunction!(ball_census, m)?)?;
     m.add_function(wrap_pyfunction!(issue_codes, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_graph6, m)?)?;
+    m.add_function(wrap_pyfunction!(automorphism_count, m)?)?;
     Ok(())
 }

@@ -1,5 +1,7 @@
 """Type stub for the Rust extension. Keep in step with rust/py/src/lib.rs."""
 
+import os
+
 CanonicalKey = tuple[tuple[int, ...], tuple[tuple[int, int], ...]]
 """(layer_sizes, edges): equal keys mean isomorphic balls, root to root. Hashable."""
 
@@ -65,6 +67,8 @@ class CompiledRuleset:
         max_open: int | None = None,
     ) -> CheckReport:
         """The validity checker. check.check_graph wraps this for NetworkX graphs."""
+    def valid_graph6(self, path: str | os.PathLike[str]) -> tuple[int, list[tuple[str, float]]]:
+        """Closed-mode check of every graph in a graph6 file: (candidates, [(graph6, |Aut|)])."""
     def compatible_types(
         self,
         num_nodes: int,
@@ -95,6 +99,12 @@ def ball_census(
     num_nodes: int, edges: list[tuple[int, int]], r: int
 ) -> list[tuple[list[tuple[int, int]], int, int]]:
     """Every node's ball grouped by shape: (canonical_edges, count, example_center), most common first."""
+
+def parse_graph6(line: str) -> tuple[int, list[tuple[int, int]]]:
+    """(num_nodes, edges) of one graph6 line. ValueError if not graph6."""
+
+def automorphism_count(num_nodes: int, edges: list[tuple[int, int]]) -> float:
+    """|Aut| from nauty, exact below 2^53."""
 
 def issue_codes() -> list[tuple[str, str]]:
     """Every code compiling can report, as (code, severity) pairs."""
