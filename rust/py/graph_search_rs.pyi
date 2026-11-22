@@ -30,6 +30,15 @@ class CompiledRuleset:
     def depth(self, index: int) -> int: ...
     def edges(self, index: int) -> list[tuple[int, int]]: ...
     def canonical_key(self, index: int) -> CanonicalKey: ...
+    def compatible_types(
+        self,
+        num_nodes: int,
+        edges: list[tuple[int, int]],
+        open_nodes: list[int],
+        centers: list[int],
+    ) -> list[list[int]]:
+        """Embedding check per center: indices of the kept types its visible ball fits.
+        embed.compatible_types wraps this for NetworkX graphs."""
     def index_of(self, edges: list[tuple[int, int]]) -> int | None:
         """Index of the type isomorphic to this ball (pruned or not), or None.
         ValueError if not a valid ball."""

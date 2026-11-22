@@ -7,7 +7,7 @@
 
 use graph_search_core::{
     ball_census as census, compile, BallExtractor, CanonicalKey, CompiledBall, CompiledRuleset,
-    Edge, Graph, Issue, IssueCode, Node,
+    Edge, EmbedQuery, EmbeddingChecker, Graph, Issue, IssueCode, Node,
 };
 use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
@@ -138,6 +138,45 @@ impl PyCompiledRuleset {
         Ok(self
             .inner
             .index_of(ball_from_edges(&edges)?.canonical_key()))
+    }
+
+    /// The embedding check, for each of `centers` in the patch on nodes
+    /// `0..num_nodes` with these edges and open nodes: the indices of the
+    /// kept types its visible ball fits, ascending. An empty list means the
+    /// node fails. Raises ValueError for an invalid graph or a node out of
+    /// range.
+    fn compatible_types(
+        &self,
+        num_nodes: usize,
+        edges: Vec<Edge>,
+        open_nodes: Vec<Node>,
+        centers: Vec<Node>,
+    ) -> PyResult<Vec<Vec<usize>>> {
+        let graph = reference_graph(num_nodes, &edges)?;
+        let out_of_range = open_nodes
+            .iter()
+            .chain(&centers)
+            .find(|&&v| v as usize >= num_nodes);
+        if let Some(v) = out_of_range {
+            return Err(PyValueError::new_err(format!(
+                "node {v} is out of range for {num_nodes} nodes"
+            )));
+        }
+        let mut open = vec![false; num_nodes];
+        for &v in &open_nodes {
+            open[v as usize] = true;
+        }
+        let distance = graph.distances_from(&open_nodes);
+        let r = self.inner.r();
+        let mut extractor = BallExtractor::new();
+        let mut checker = EmbeddingChecker::new(&self.inner);
+        Ok(centers
+            .iter()
+            .map(|&v| {
+                let ball = extractor.extract(&graph, v, r);
+                checker.compatible(&EmbedQuery::new(&ball, &open, &distance, r))
+            })
+            .collect())
     }
 }
 

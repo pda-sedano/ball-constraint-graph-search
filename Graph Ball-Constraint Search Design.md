@@ -218,7 +218,21 @@ A consequence: a shadow node's own degree is final, so it only matches types wit
 
 - Both rules are pairwise tests between one visible node and one type node. In Rust they are the node test inside a small backtracking matcher, since balls are tiny. The Python oracle passes the same test to NetworkX's VF2 induced-subgraph matcher as a custom node-match function.
 - Prefilter types by root degree and layer sizes before matching.
-- Memoize lazily. The key is the canonical form of the visible ball colored by distance, open or closed, and window lower bound. The value is the compatible set.
+- No memo for now. Measured, a memo keyed by canonical form cost 2 to 6 µs per check, more than most matches, and only broke even on random-regular rulesets. Revisit if profiling the checker says so.
+
+**Matcher, as measured.** Four designs were timed on cut-test patches from lattices, an open grid and random graphs: the hand-written matcher and the `vf2` crate, each with and without the memo. The hand-written matcher won every time, by 3 to 5 times. Both had exponential worst cases on bushy, tree-like balls, from trying arrangements of interchangeable leaves one by one. The built version therefore:
+
+- searches visible nodes in BFS order and gives twins increasing images. Twins are nodes with the same neighbors and the same rule inputs; openness counts only below depth r, where the degree rule reads it.
+- falls back after 10,000 steps to constraint propagation, after LAD and the Glasgow subgraph solver: bitset candidate sets, a neighborhood matching filter, a global all-different check, and shallow nodes decided first.
+- also requires each image to have at least u's degree within the ball. That holds by definition, so it only filters.
+
+| Workload | Plain backtracking | With twins |
+| --- | --- | --- |
+| Random 4-regular, r = 2 | 20.5 µs | 4.8 µs |
+| Random 3-regular, r = 3 | 13.9 µs | 6.6 µs |
+| Lattices and open grid | 0.4 to 10.6 µs | About the same |
+
+**Known limit.** On a stress ruleset of 988 types from a random graph with degrees up to 11, the median node takes about 3 ms, but rare nodes take seconds. If a real ruleset hits this, the next step is stronger propagation, such as the Glasgow solver's counts of common neighbors at distance 2.
 
 **One checker for all three classes.** For a core node every window collapses to an exact depth and every degree is exact, which forces a full isomorphism. Core checking is the special case, with canonical lookup as its fast path.
 
@@ -330,7 +344,7 @@ Each step is testable before the next one exists, and steps 1 to 3 are already u
 3. **Canonical form, Rust (built).** nauty's densenauty through the nauty-Traces-sys bindings, colored by distance from the root. Compiling now merges isomorphic duplicates. Python oracle: NetworkX hash-plus-VF2.
 4. **Graph and ball extraction, Rust (built).** Flat adjacency rows sized by the largest root degree in L (a reference graph uses its own), with add, remove and has-edge. Visible r-ball of a node with distances, plus "all balls in a reference graph" as a census with counts. Python gets ruleset\_from\_graph for NetworkX graphs and a single-ball extractor; the mutable graph stays in Rust until the sampler.
 5. **Pruning, Rust (built).** Visible sub-ball check on L in synchronous rounds, run by every compile. Pruned types stay in the compiled ruleset beside the list of survivors. Each removal is a warning naming the node whose sub-ball had no match and the removed types that used to supply it, and an empty result is reported as unrealizable. Python oracle: the same rule written directly with NetworkX, plus a check that a real graph's balls are never pruned.
-6. **Embedding check, Rust.** Backtracking matcher with the distance-window and closed-degree rules, memoized.
+6. **Embedding check, Rust (built).** Backtracking over visible nodes in BFS order with twin symmetry breaking, falling back to constraint propagation after a step budget. No memo, by measurement. Matches only the kept types. Python oracle: the same rules as a node-match function for NetworkX's VF2 matcher.
 7. **Validity checker, Rust, plus the Python oracle checker.** Classification, per-node check, report. The oracle is a slow NetworkX version for n up to about 10, used only in tests. Introduces the graph file format; the hand cases are literals in the tests, not files.
 8. **Enumeration baseline.** All valid graphs at very small n, run through the Rust checker, for ground truth. NetworkX's graph atlas stops at 7 nodes; nauty's geng (connected only with -c, degree cap with -D) goes much further, read from its graph6 output.
 9. **Sampler, version 1, Rust.** One chain, closed mode, full recheck. Each sample is saved in the graph file format, with |Aut| and the chain step in its metadata, for Python to read for analysis and drawing.

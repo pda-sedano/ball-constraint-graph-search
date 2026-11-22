@@ -199,6 +199,33 @@ impl Graph {
         edges
     }
 
+    /// Each node's distance to the nearest of `sources`, by one breadth-first
+    /// search from all of them at once. `u32::MAX` where no source reaches,
+    /// so with no sources every entry is `u32::MAX`.
+    ///
+    /// The validity checker uses it with the open set as sources: 0 is open,
+    /// 1 to r - 1 shadow, r or more core.
+    pub fn distances_from(&self, sources: &[Node]) -> Vec<u32> {
+        let mut distance = vec![u32::MAX; self.num_nodes()];
+        let mut queue = std::collections::VecDeque::with_capacity(sources.len());
+        for &s in sources {
+            if distance[s as usize] != 0 {
+                distance[s as usize] = 0;
+                queue.push_back(s);
+            }
+        }
+        while let Some(v) = queue.pop_front() {
+            let next = distance[v as usize] + 1;
+            for &w in self.neighbors(v) {
+                if distance[w as usize] == u32::MAX {
+                    distance[w as usize] = next;
+                    queue.push_back(w);
+                }
+            }
+        }
+        distance
+    }
+
     fn push_neighbor(&mut self, v: Node, w: Node) {
         let degree = self.degree(v);
         self.slots[v as usize * self.max_degree + degree] = w;
@@ -222,6 +249,16 @@ impl Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distances_from_several_sources() {
+        //! A path 0-1-2-3-4-5 with sources at both ends, and a separate node 6.
+        let edges = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)];
+        let g = Graph::from_edges(7, 2, &edges).expect("valid");
+        assert_eq!(g.distances_from(&[0, 5]), [0, 1, 2, 2, 1, 0, u32::MAX]);
+        assert_eq!(g.distances_from(&[]), [u32::MAX; 7]);
+        assert_eq!(g.distances_from(&[3, 3]), [3, 2, 1, 0, 1, 2, u32::MAX]);
+    }
 
     #[test]
     fn add_remove_and_query() {

@@ -18,7 +18,7 @@ dev = ["pytest>=8", "hypothesis>=6", "maturin>=1.5,<2"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["balltype", "compiled", "draw", "extract", "report", "ruleset", "ruleset_io"]
+py-modules = ["balltype", "compiled", "draw", "embed", "extract", "report", "ruleset", "ruleset_io"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

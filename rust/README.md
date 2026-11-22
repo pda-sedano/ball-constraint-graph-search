@@ -59,3 +59,17 @@ the node whose sub-ball had no match, that sub-ball, and which removed types use
 Compiling reports each removal as a `pruned_type` warning, and `unrealizable` if nothing is left.
 `tests/test_prune.py` checks the result against a direct NetworkX version of the rule, and checks
 that the balls of any real graph are never pruned.
+
+## Embedding check
+
+`core/src/embed.rs` checks open and shadow nodes, whose visible ball may be incomplete: it must
+embed into some kept type as a rooted induced subgraph, under the design doc's distance-window and
+closed-degree rules. `EmbedQuery::new` builds the query from a `VisibleBall` plus each node's open
+flag and distance to the open set (`Graph::distances_from`); `EmbeddingChecker::compatible` returns
+the kept types it fits. The matcher backtracks over visible nodes in BFS order, giving interchangeable
+"twin" nodes increasing images, and falls back to constraint propagation after `STEP_BUDGET` steps.
+Both choices, and leaving out a memo, came from a benchmark (see the design doc). From Python,
+`embed.compatible_types(compiled, G, open_nodes)` checks every node of a NetworkX patch at once;
+pass all the nodes in one call, since each call rebuilds the checker. `tests/test_embed.py`
+compares it with a NetworkX VF2 oracle that shares none of its code.
+

@@ -48,7 +48,7 @@ def extract_ball(graph: nx.Graph, center: Hashable, r: int) -> ExtractedBall:
     """
     import graph_search_rs
 
-    labels, number, edges = _numbered(graph)
+    labels, number, edges = number_nodes(graph)
     if center not in number:
         raise ValueError(f"center {center!r} is not a node of the graph")
     numbers, depths, ball_edges = graph_search_rs.extract_ball(len(labels), edges, number[center], r)
@@ -82,7 +82,7 @@ def ruleset_from_graph(
 
     if not (isinstance(r, int) and not isinstance(r, bool) and r >= 1):
         raise ValueError(f"r must be an int of at least 1, got {r!r}")
-    labels, _, edges = _numbered(graph)
+    labels, _, edges = number_nodes(graph)
     census = graph_search_rs.ball_census(len(labels), edges, r)
     types = tuple(
         BallType.from_edges(ball_edges, label=f"e.g. node {labels[example]}", count=count)
@@ -95,11 +95,12 @@ def ruleset_from_graph(
     return Ruleset(name=name, r=r, types=types, metadata=info)
 
 
-def _numbered(
+def number_nodes(
     graph: nx.Graph,
 ) -> tuple[list[Hashable], dict[Hashable, int], list[tuple[int, int]]]:
-    """Number the nodes 0..n-1 in the graph's own order: the labels in that
-    order, each label's number, and the edges in those numbers."""
+    """Number the nodes 0..n-1 in the graph's own order, for passing to Rust:
+    the labels in that order, each label's number, and the edges in those
+    numbers. Raises ValueError for a directed graph, a multigraph, or self-loops."""
     if graph.is_directed() or graph.is_multigraph():
         raise ValueError("expected a simple undirected graph (nx.Graph)")
     loops = list(nx.selfloop_edges(graph))

@@ -16,12 +16,15 @@
 //! - [`graph`]: [`Graph`], fixed-size adjacency rows edited in place.
 //! - [`extract`]: the radius-r ball around a node ([`BallExtractor`]), and
 //!   [`ball_census()`], every ball shape in a reference graph with counts.
+//! - [`embed`]: the embedding check for open and shadow nodes, whose visible
+//!   ball must fit inside some kept type ([`EmbeddingChecker`]).
 //!
-//! Later steps add the embedding check, the validity checker and the sampler.
+//! Later steps add the validity checker and the sampler.
 
 pub mod ball;
 pub mod canonical;
 pub mod compile;
+pub mod embed;
 pub mod extract;
 pub mod graph;
 pub mod issue;
@@ -31,6 +34,7 @@ pub mod ruleset;
 pub use ball::{check_structure, CompiledBall, Edge, Node};
 pub use canonical::{CanonicalForm, CanonicalKey};
 pub use compile::{compile, CompileOutcome};
+pub use embed::{EmbedQuery, EmbeddingChecker, STEP_BUDGET};
 pub use extract::{ball_census, BallExtractor, CensusEntry, VisibleBall};
 pub use graph::{Graph, GraphError};
 pub use issue::{Issue, IssueCode, Severity};
