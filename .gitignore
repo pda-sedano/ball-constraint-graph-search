@@ -4,6 +4,9 @@ claude
 Graph Ball-Constraint Search Design_files
 *.html
 
+# Search output
+runs/
+
 # Python
 __pycache__/
 *.egg-info/

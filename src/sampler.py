@@ -15,6 +15,8 @@ nodes, which may have neighbors outside the patch::
     print(run)                                   # acceptance, time valid, graphs seen
     print(compare_with_baseline(run, baseline(compiled, 8).levels[8]))
     save_snapshots(run, "samples/showcase-n8", ruleset_name="showcase")
+    save_run(run, "runs/showcase-n8", ruleset_name="showcase")   # the whole run
+    run = load_run("runs/showcase-n8")
 
     # Open mode: patches with 2 open nodes, checked against open_level.
     run = sample(compiled, n=6, steps=200_000, open_nodes=2, seed=1)
@@ -44,6 +46,8 @@ nothing. Snapshots and diagnostics work at any n.
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass
 from os import PathLike
@@ -187,9 +191,7 @@ class Run:
         total = sum(raw)
         return tuple(w / total for w in raw)
 
-    def average(
-        self, statistic: Callable[[Snapshot], float], count: Count = "unlabelled"
-    ) -> float:
+    def average(self, statistic: Callable[[Snapshot], float], count: Count = "unlabelled") -> float:
         """The weighted mean of ``statistic`` over the snapshots: its average over
         valid states with each unlabelled state counted once (``"unlabelled"``)
         or each numbered state once (``"numbered"``).
@@ -490,8 +492,7 @@ class Comparison:
         for visit in self.unexpected:
             open_text = ",".join(map(str, visit.open)) or "-"
             lines.append(
-                f"{visit.graph6:<16} {open_text:<12} {visit.automorphisms:>6}  "
-                "not in the baseline"
+                f"{visit.graph6:<16} {open_text:<12} {visit.automorphisms:>6}  not in the baseline"
             )
         return "\n".join(lines)
 
@@ -516,9 +517,7 @@ def compare_with_baseline(run: Run, level: Level, count: Count = "unlabelled") -
     if level.n != run.num_nodes:
         raise ValueError(f"run is for n = {run.num_nodes}, baseline level for n = {level.n}")
     if level.open_nodes != run.open_nodes:
-        raise ValueError(
-            f"run has {run.open_nodes} open nodes, baseline level {level.open_nodes}"
-        )
+        raise ValueError(f"run has {run.open_nodes} open nodes, baseline level {level.open_nodes}")
     observed = run.shares(count)
     # geng's closed-mode lines are not in canonical numbering; open-mode levels
     # already are, and canonicalizing them again changes nothing.
@@ -561,11 +560,16 @@ def save_snapshots(
     its open set in the file's ``open`` tensor.
 
     The metadata records the ruleset name, n, the number of open nodes, β,
-    seed, the chain step and |Aut|, plus anything in ``metadata``. Returns
-    the paths written.
+    seed, the chain step and |Aut|, plus anything in ``metadata``, whose keys
+    must not be those (or ``source`` or ``energy``). Returns the paths
+    written.
+
+    Raises:
+        ValueError: ``metadata`` uses a reserved key.
     """
     from graph_io import save_graph
 
+    _check_metadata_keys(metadata)
     folder = Path(directory)
     folder.mkdir(parents=True, exist_ok=True)
     width = len(str(run.burn_in + run.steps))
@@ -590,3 +594,225 @@ def save_snapshots(
         )
         paths.append(path)
     return paths
+
+
+RUN_FORMAT = 1
+"""Version of the folder layout ``save_run`` writes."""
+
+RESERVED_METADATA = frozenset(
+    {
+        "source",
+        "ruleset",
+        "num_nodes",
+        "open_nodes",
+        "beta",
+        "seed",
+        "step",
+        "automorphisms",
+        "energy",
+    }
+)
+"""Keys the sampler writes into graph files itself; user metadata may not use them."""
+
+
+def _check_metadata_keys(metadata: dict[str, Hashable] | None) -> None:
+    clashes = sorted(RESERVED_METADATA.intersection(metadata or {}))
+    if clashes:
+        raise ValueError(f"metadata keys {clashes} are reserved for the sampler's own records")
+
+
+RUN_FILE = "run.json"
+FINAL_FILE = "final.safetensors"
+SNAPSHOT_FOLDER = "snapshots"
+
+
+def save_run(
+    run: Run,
+    folder: str | PathLike[str],
+    ruleset_name: str | None = None,
+    metadata: dict[str, Hashable] | None = None,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """Save a whole run in one folder, for ``load_run`` to read back.
+
+    The folder holds:
+
+    - ``run.json``: the settings, move statistics, visit counts, energy trace,
+      final energy, the snapshot list, and ``ruleset_name`` and ``metadata``
+      if given. Written last, so a folder with it is a complete save.
+    - ``final.safetensors``: the chain's final graph and open set, as a graph
+      file, since at large n its edge list would bloat the JSON.
+    - ``snapshots/``: the snapshots as graph files, as ``save_snapshots``
+      writes them.
+
+    ``metadata`` must be JSON-serializable and may not use the keys in
+    ``RESERVED_METADATA``. Returns the folder.
+
+    Raises:
+        FileExistsError: the folder already holds a saved run and
+            ``overwrite`` is False. With ``overwrite``, the old run's files
+            are removed first (only those a save writes).
+        ValueError: ``metadata`` uses a reserved key.
+    """
+    from graph_io import save_graph
+
+    _check_metadata_keys(metadata)
+    root = Path(folder)
+    record_path = root / RUN_FILE
+    final_path = root / FINAL_FILE
+    snapshot_dir = root / SNAPSHOT_FOLDER
+    old_snapshots = sorted(snapshot_dir.glob("step-*.safetensors")) if snapshot_dir.is_dir() else []
+    if record_path.exists() or final_path.exists() or old_snapshots:
+        if not overwrite:
+            raise FileExistsError(
+                f"{root} already holds a saved run; pass overwrite=True to replace it"
+            )
+        # The record goes first, so a half-replaced folder never looks complete.
+        record_path.unlink(missing_ok=True)
+        final_path.unlink(missing_ok=True)
+        for path in old_snapshots:
+            path.unlink()
+    root.mkdir(parents=True, exist_ok=True)
+
+    snapshot_paths = save_snapshots(run, snapshot_dir, ruleset_name, metadata)
+    final = nx.Graph()
+    final.add_nodes_from(range(run.num_nodes))
+    final.add_edges_from(run.final_edges)
+    save_graph(
+        final_path,
+        final,
+        open_nodes=run.final_open,
+        metadata={
+            "source": "sampler final state",
+            "ruleset": ruleset_name,
+            "step": run.burn_in + run.steps,
+            "energy": run.final_energy,
+            **(metadata or {}),
+        },
+    )
+
+    record = {
+        "format": RUN_FORMAT,
+        "ruleset": ruleset_name,
+        "metadata": dict(metadata or {}),
+        "settings": {
+            "num_nodes": run.num_nodes,
+            "beta": run.beta,
+            "seed": run.seed,
+            "burn_in": run.burn_in,
+            "steps": run.steps,
+            "max_degree": run.max_degree,
+            "open_nodes": run.open_nodes,
+            "swap_rate": run.swap_rate,
+        },
+        "moves": {
+            "proposed_remove": run.proposed_remove,
+            "accepted_remove": run.accepted_remove,
+            "proposed_add": run.proposed_add,
+            "accepted_add": run.accepted_add,
+            "proposed_swap": run.proposed_swap,
+            "accepted_swap": run.accepted_swap,
+            "capped": run.capped,
+            "no_candidate": run.no_candidate,
+        },
+        "valid_steps": run.valid_steps,
+        "counted": run.counted,
+        "visits": [[v.graph6, list(v.open), v.steps, v.automorphisms] for v in run.visits],
+        "trace": [[step, energy] for step, energy in run.trace],
+        "final_energy": run.final_energy,
+        "snapshots": [
+            {
+                "file": path.relative_to(root).as_posix(),
+                "step": snapshot.step,
+                "automorphisms": snapshot.automorphisms,
+            }
+            for path, snapshot in zip(snapshot_paths, run.snapshots, strict=True)
+        ],
+    }
+    partial = root / (RUN_FILE + ".part")
+    partial.write_text(json.dumps(record, indent=1))
+    os.replace(partial, record_path)
+    return root
+
+
+def load_run(folder: str | PathLike[str]) -> Run:
+    """Read a run saved by ``save_run``.
+
+    Raises:
+        FileNotFoundError: the folder has no ``run.json`` (not a complete
+            save), or a graph file it lists is missing.
+        ValueError: an unknown format version, a missing entry, or a graph
+            file that is invalid or does not match the record.
+    """
+    root = Path(folder)
+    record_path = root / RUN_FILE
+    if not record_path.exists():
+        raise FileNotFoundError(f"{record_path} not found: {root} is not a complete saved run")
+    record = json.loads(record_path.read_text())
+    if record.get("format") != RUN_FORMAT:
+        raise ValueError(
+            f"{record_path}: format {record.get('format')!r}, this code reads {RUN_FORMAT}"
+        )
+    try:
+        settings, moves = record["settings"], record["moves"]
+        n = settings["num_nodes"]
+        snapshots = []
+        for entry in record["snapshots"]:
+            graph_file = _load_run_graph(root / entry["file"], n)
+            if graph_file.metadata.get("step") != entry["step"]:
+                raise ValueError(
+                    f"{root / entry['file']}: step {graph_file.metadata.get('step')}, "
+                    f"record says {entry['step']}"
+                )
+            snapshots.append(
+                Snapshot(
+                    entry["step"], graph_file.edges, entry["automorphisms"], graph_file.open_nodes
+                )
+            )
+        final = _load_run_graph(root / FINAL_FILE, n)
+        return Run(
+            num_nodes=n,
+            beta=settings["beta"],
+            seed=settings["seed"],
+            burn_in=settings["burn_in"],
+            steps=settings["steps"],
+            max_degree=settings["max_degree"],
+            open_nodes=settings["open_nodes"],
+            swap_rate=settings["swap_rate"],
+            proposed_remove=moves["proposed_remove"],
+            accepted_remove=moves["accepted_remove"],
+            proposed_add=moves["proposed_add"],
+            accepted_add=moves["accepted_add"],
+            proposed_swap=moves["proposed_swap"],
+            accepted_swap=moves["accepted_swap"],
+            capped=moves["capped"],
+            no_candidate=moves["no_candidate"],
+            valid_steps=record["valid_steps"],
+            counted=record["counted"],
+            visits=tuple(
+                Visit(g6, tuple(open_set), steps, aut)
+                for g6, open_set, steps, aut in record["visits"]
+            ),
+            snapshots=tuple(snapshots),
+            trace=tuple((step, energy) for step, energy in record["trace"]),
+            final_edges=final.edges,
+            final_open=final.open_nodes,
+            final_energy=record["final_energy"],
+        )
+    except KeyError as missing:
+        raise ValueError(f"{record_path}: missing entry {missing}") from None
+
+
+def _load_run_graph(path: Path, num_nodes: int):
+    """A graph file of a saved run, checked and matched to the run's n."""
+    from graph_io import load_graph
+
+    if not path.exists():
+        raise FileNotFoundError(f"{path} not found")
+    graph_file, report = load_graph(path)
+    if graph_file is None:
+        raise ValueError(f"{path} is not a valid graph file:\n{report}")
+    if graph_file.num_nodes != num_nodes:
+        raise ValueError(f"{path} has {graph_file.num_nodes} nodes, the run {num_nodes}")
+    return graph_file

@@ -128,7 +128,10 @@ open_nodes=m)` returns a `Run` (print it for acceptance, time valid and graphs s
 `compare_with_baseline(run, level)` checks its time on each graph against the enumeration baseline,
 or for open runs against `enumeration.open_level(compiled, n, m)`, which tries every m-subset of
 every candidate as its open set. `save_snapshots(run, folder)` writes the snapshots as graph files
-with their open sets, and |Aut|, β, seed and step in the metadata.
+with their open sets, and |Aut|, β, seed and step in the metadata. `save_run(run, folder)` saves the
+whole run in one folder (`run.json` with the settings, statistics, visit counts and trace;
+`final.safetensors` with the final state; the snapshot files under `snapshots/`), refusing to
+overwrite an earlier save unless told to, and `load_run(folder)` gives back an equal `Run`.
 
 The chain is uniform over numbered graphs, so a graph with more symmetries gets less time, in
 proportion to 1/|Aut|. Since the numbering is arbitrary, analysis counts each unlabelled graph once

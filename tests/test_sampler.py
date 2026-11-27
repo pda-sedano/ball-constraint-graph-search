@@ -6,6 +6,7 @@ run the real chain with real rulesets.
 """
 
 import functools
+import json
 import math
 from pathlib import Path
 
@@ -25,7 +26,9 @@ from sampler import (  # noqa: E402
     canonical_key,
     compare_with_baseline,
     default_start_edges,
+    load_run,
     sample,
+    save_run,
     save_snapshots,
 )
 
@@ -228,6 +231,7 @@ def test_save_snapshots_round_trip(path_ball, tmp_path):
 
 # --- open mode ------------------------------------------------------------------------
 
+
 @functools.cache
 def atlas():
     """Every graph on up to 7 nodes, for open-mode ground truth without geng."""
@@ -411,3 +415,94 @@ def test_counting_errors(path_ball):
     assert run.effective_samples() == 0.0
     with pytest.raises(ValueError, match="count must be one of"):
         compare_with_baseline(sample(path_ball, 8, 10), level_of(8, []), count="labelled")
+
+
+# --- saving and loading runs ----------------------------------------------------------
+
+
+def test_closed_run_round_trips(path_ball, tmp_path):
+    run = sample(path_ball, 8, 6_000, burn_in=1_000, seed=3, snapshot_every=500, trace_every=100)
+    assert run.snapshots and run.visits and run.trace
+    folder = save_run(run, tmp_path / "run", ruleset_name="path-ball", metadata={"note": "hi"})
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "final.safetensors",
+        "run.json",
+        "snapshots",
+    ]
+    loaded = load_run(folder)
+    assert loaded == run
+    assert loaded.shares() == run.shares()
+    record = json.loads((folder / "run.json").read_text())
+    assert (record["ruleset"], record["metadata"]) == ("path-ball", {"note": "hi"})
+    graph_file, _ = load_graph(folder / "final.safetensors")
+    assert graph_file.metadata["step"] == 7_000
+
+
+def test_open_run_round_trips(cubic, tmp_path):
+    run = sample(cubic, 7, 20_000, open_nodes=3, seed=2, snapshot_every=500)
+    assert run.snapshots and run.final_open
+    assert load_run(save_run(run, tmp_path / "open")) == run
+
+
+def test_runs_without_snapshots_or_counts_round_trip(path_ball, tmp_path):
+    run = sample(path_ball, 40, 500, seed=1)
+    assert not run.counted and not run.snapshots
+    assert load_run(save_run(run, tmp_path / "bare")) == run
+
+
+def test_save_run_refuses_to_overwrite_unless_asked(path_ball, tmp_path):
+    folder = tmp_path / "run"
+    first = sample(path_ball, 8, 6_000, burn_in=1_000, seed=3, snapshot_every=250)
+    save_run(first, folder)
+    with pytest.raises(FileExistsError, match="overwrite=True"):
+        save_run(first, folder)
+    second = sample(path_ball, 8, 3_000, burn_in=1_000, seed=4, snapshot_every=1_000)
+    assert len(second.snapshots) < len(first.snapshots)
+    save_run(second, folder, overwrite=True)
+    assert load_run(folder) == second
+    # No stale snapshot files from the first run.
+    assert len(list((folder / "snapshots").iterdir())) == len(second.snapshots)
+
+
+def test_reserved_metadata_keys_are_refused(path_ball, tmp_path):
+    run = sample(path_ball, 8, 2_000, seed=1, snapshot_every=500)
+    with pytest.raises(ValueError, match=r"\['step'\] are reserved"):
+        save_run(run, tmp_path / "run", metadata={"step": 5})
+    with pytest.raises(ValueError, match="reserved"):
+        save_snapshots(run, tmp_path / "snaps", metadata={"automorphisms": 1})
+    assert not (tmp_path / "run").exists()
+
+
+def test_load_run_errors(path_ball, tmp_path):
+    with pytest.raises(FileNotFoundError, match="not a complete saved run"):
+        load_run(tmp_path / "nothing")
+    run = sample(path_ball, 8, 6_000, burn_in=1_000, seed=3, snapshot_every=500)
+    folder = save_run(run, tmp_path / "run")
+    record_path = folder / "run.json"
+    good = record_path.read_text()
+
+    def edited(change):
+        record = json.loads(good)
+        change(record)
+        record_path.write_text(json.dumps(record))
+
+    edited(lambda r: r.update(format=99))
+    with pytest.raises(ValueError, match="format 99"):
+        load_run(folder)
+    edited(lambda r: r.pop("trace"))
+    with pytest.raises(ValueError, match="missing entry 'trace'"):
+        load_run(folder)
+    edited(lambda r: r["settings"].update(num_nodes=9))
+    with pytest.raises(ValueError, match="has 8 nodes, the run 9"):
+        load_run(folder)
+    edited(lambda r: r["snapshots"][0].update(step=1))
+    with pytest.raises(ValueError, match="record says 1"):
+        load_run(folder)
+    record_path.write_text(good)
+    (folder / run_snapshot_name(folder)).unlink()
+    with pytest.raises(FileNotFoundError):
+        load_run(folder)
+
+
+def run_snapshot_name(folder):
+    return json.loads((folder / "run.json").read_text())["snapshots"][0]["file"]
