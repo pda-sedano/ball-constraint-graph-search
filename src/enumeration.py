@@ -18,6 +18,13 @@ Two levels of cache, under ``.cache/`` at the repository root (or
 Every node of a valid closed graph has one of the kept types' root degrees,
 so geng only generates graphs with degrees between the smallest and largest.
 
+Open mode has its own ground truth, ``open_level``: every candidate graph with
+every set of m open nodes, kept once per isomorphism class (open nodes
+mapped to open nodes) with the symmetries that keep the open set in place.
+An open node may be missing neighbors, so candidates there have degrees from
+1 up to the largest root degree. Its results are not cached (geng's lists
+are), since it is meant for the small n the sampler is checked at.
+
 geng comes with nauty: ``brew install nauty`` on macOS, ``apt install nauty``
 on Debian and Ubuntu (which name it ``nauty-geng``). Set ``$GENG`` to use a
 particular binary.
@@ -40,6 +47,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from math import factorial
 from pathlib import Path
@@ -62,10 +70,14 @@ class GengNotFound(RuntimeError):
 
 @dataclass(frozen=True)
 class ValidGraph:
-    """One valid graph, as geng wrote it."""
+    """One valid graph: as geng wrote it in closed mode, or in canonical form
+    with its open set in open mode."""
 
     graph6: str
     automorphisms: int
+    """Symmetries of the graph, keeping the open set in place if there is one."""
+    open: tuple[int, ...] = ()
+    """The open nodes, in ``graph6``'s numbering; empty in closed mode."""
 
     def to_networkx(self) -> nx.Graph:
         return nx.from_graph6_bytes(self.graph6.encode())
@@ -76,7 +88,7 @@ class ValidGraph:
 
     @property
     def numberings(self) -> int:
-        """n!/|Aut|: how many labelled graphs this unlabelled one stands for."""
+        """n!/|Aut|: how many numbered graphs (with open sets) this class stands for."""
         return factorial(self.num_nodes) // self.automorphisms
 
 
@@ -88,6 +100,8 @@ class Level:
     candidates: int
     """Connected graphs geng generated within the degree range."""
     valid: tuple[ValidGraph, ...]
+    open_nodes: int = 0
+    """m: every valid graph here has exactly this many open nodes (0 is closed mode)."""
 
 
 @dataclass(frozen=True)
@@ -155,7 +169,7 @@ def geng_list(n: int, min_degree: int, max_degree: int, root: Path | None = None
     command = [find_geng(), "-cq", f"-d{min_degree}", f"-D{max_degree}", str(n)]
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False, suffix=".part") as out:
         try:
-            done = subprocess.run(command, stdout=out, stderr=subprocess.PIPE)
+            done = subprocess.run(command, stdout=out, stderr=subprocess.PIPE, check=False)
         except BaseException:
             Path(out.name).unlink(missing_ok=True)
             raise
@@ -203,6 +217,51 @@ def baseline(
             source = "cached" if cached else f"{time.perf_counter() - started:.1f} s"
             print(f"n = {n}: {level.candidates} candidates, {len(level.valid)} valid ({source})")
     return Baseline(r=compiled.r, degree_range=degrees, levels=levels)
+
+
+def open_level(
+    compiled: CompiledRuleset,
+    n: int,
+    m: int,
+    *,
+    graphs: Iterable[nx.Graph] | None = None,
+    root: Path | None = None,
+) -> Level:
+    """Every valid graph on n nodes with exactly m open nodes, once per class.
+
+    Candidates come from geng (connected, degrees 1 up to the largest kept root
+    degree; geng's list is cached) or, if given, from ``graphs``, of which only
+    those on n nodes are used, e.g. ``nx.graph_atlas_g()`` to avoid needing
+    geng up to 7 nodes. Each candidate is checked with every m-subset as its
+    open set. The cost is the candidates times C(n, m), so keep n small.
+    ``open_level(compiled, n, 0)`` gives the closed-mode valid graphs, in
+    canonical form.
+    """
+    if graphs is None:
+        degrees = degree_range(compiled)
+        if degrees is None:
+            return Level(n, 0, (), open_nodes=m)
+        low = 0 if n == 1 else (1 if m > 0 else degrees[0])
+        high = min(degrees[1], n - 1) if n > 1 else 0
+        if low > high:
+            return Level(n, 0, (), open_nodes=m)
+        candidates, _, valid = compiled.valid_open_graph6(geng_list(n, low, high, root), m)
+    else:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "graphs.g6"
+            lines = [
+                nx.to_graph6_bytes(nx.convert_node_labels_to_integers(g), header=False)
+                for g in graphs
+                if g.number_of_nodes() == n
+            ]
+            path.write_bytes(b"".join(lines))
+            candidates, _, valid = compiled.valid_open_graph6(path, m)
+    return Level(
+        n,
+        candidates,
+        tuple(ValidGraph(g6, round(aut), tuple(open_nodes)) for g6, open_nodes, aut in valid),
+        open_nodes=m,
+    )
 
 
 def _compute_level(compiled, n, degrees, root) -> Level:

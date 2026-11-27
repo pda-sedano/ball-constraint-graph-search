@@ -83,8 +83,16 @@ class CompiledRuleset:
         trace_every: int | None = None,
         start_edges: list[tuple[int, int]] | None = None,
         random_start_edges: int = 0,
+        open_nodes: int = 0,
+        swap_rate: float = 0.2,
+        start_open: list[int] | None = None,
     ) -> dict[str, Any]:
-        """One closed-mode sampler chain. sampler.sample wraps this; see it for the keys."""
+        """One sampler chain with exactly open_nodes open nodes (0 is closed mode).
+        sampler.sample wraps this; see it for the keys."""
+    def valid_open_graph6(
+        self, path: str | os.PathLike[str], m: int
+    ) -> tuple[int, int, list[tuple[str, list[int], float]]]:
+        """(candidates, open sets checked, [(canonical graph6, open, |Aut|)]) per valid class."""
     def compatible_types(
         self,
         num_nodes: int,
@@ -124,6 +132,11 @@ def automorphism_count(num_nodes: int, edges: list[tuple[int, int]]) -> float:
 
 def canonical_graph6(num_nodes: int, edges: list[tuple[int, int]]) -> tuple[str, float]:
     """(canonical graph6, |Aut|): equal strings exactly for isomorphic graphs."""
+
+def canonical_open_graph6(
+    num_nodes: int, edges: list[tuple[int, int]], open_nodes: list[int] = ...
+) -> tuple[str, list[int], float]:
+    """(canonical graph6, canonical open nodes, |Aut| keeping the open set)."""
 
 def issue_codes() -> list[tuple[str, str]]:
     """Every code compiling can report, as (code, severity) pairs."""

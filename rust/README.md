@@ -110,25 +110,43 @@ few spring layouts has the fewest edge crossings.
 
 ## Sampler
 
-`core/src/sample.rs` is sampler version 1: one Metropolis-Hastings chain on n nodes in closed mode,
-at a fixed β, adding or removing one edge per step with the proposal correction, and rechecking
-every node after each move. The degree cap is the kept types' largest root degree. The energy is a
-trait: `RulesetEnergy` is the design doc's (failing nodes + components − 1), and `ZeroEnergy` makes
-the chain uniform over all graphs under the cap, for testing. `Recorder` runs a chain and counts
-the steps spent on each valid unlabelled graph (keyed by canonical graph6, from
-`canonical::canonical_graph`), takes snapshots at fixed step numbers, and records an energy trace.
-Random numbers come from `core/src/rng.rs` (xoshiro256**), so a seed reproduces a run exactly.
+`core/src/sample.rs` is sampler version 1: one Metropolis-Hastings chain on n nodes at a fixed β,
+adding or removing one edge per step with the proposal correction, and rechecking every node after
+each move. With `Settings::open_nodes = m > 0` the state also carries an open set of exactly m
+nodes, and a share `swap_rate` of steps instead propose swapping one open node's flag with a
+non-open node's; closed mode never draws for a swap, so its runs are unchanged by open mode. The
+degree cap is the kept types' largest root degree. The energy is a trait: `RulesetEnergy` is the
+design doc's (failing nodes + components − 1), and `ZeroEnergy` makes the chain uniform over all
+graphs under the cap, for testing. `Recorder` runs a chain and counts the steps spent on each valid
+state up to isomorphism (keyed by canonical graph6 and canonical open nodes, from
+`canonical::canonical_open_graph`), takes snapshots at fixed step numbers, and records an energy
+trace. Random numbers come from `core/src/rng.rs` (xoshiro256**), so a seed reproduces a run
+exactly.
 
-From Python, `sampler.sample(compiled, n, steps, beta=..., seed=..., snapshot_every=...)` returns a
-`Run` (print it for acceptance, time valid and graphs seen); `compare_with_baseline(run, level)`
-checks its time on each graph against n!/|Aut| from the enumeration baseline; and
-`save_snapshots(run, folder)` writes the snapshots as graph files with |Aut|, β, seed and step in
-the metadata. Counting visits to each graph is on by default up to `COUNT_GRAPHS_MAX_NODES` (32)
-and refused above it: each graph6 key takes about n²/12 bytes, and at large n graphs rarely recur. Runs check for Ctrl-C every 20,000 steps. A step costs about 7 µs at n = 10 and 40 µs
-at n = 24 in a release build, so build release for real runs.
+From Python, `sampler.sample(compiled, n, steps, beta=..., seed=..., snapshot_every=...,
+open_nodes=m)` returns a `Run` (print it for acceptance, time valid and graphs seen).
+`compare_with_baseline(run, level)` checks its time on each graph against the enumeration baseline,
+or for open runs against `enumeration.open_level(compiled, n, m)`, which tries every m-subset of
+every candidate as its open set. `save_snapshots(run, folder)` writes the snapshots as graph files
+with their open sets, and |Aut|, β, seed and step in the metadata.
+
+The chain is uniform over numbered graphs, so a graph with more symmetries gets less time, in
+proportion to 1/|Aut|. Since the numbering is arbitrary, analysis counts each unlabelled graph once
+by default, weighting every sample by its |Aut|: `run.shares()`, `run.average(statistic)` and
+`compare_with_baseline` take `count="unlabelled"` (the default) or `count="numbered"` (the chain's
+own weighting, the tighter test of the chain), and `run.effective_samples()` shows how much the
+weighting costs in noise.
+
+Counting visits to each graph is on by default up to `COUNT_GRAPHS_MAX_NODES` (32) and refused
+above it: each graph6 key takes about n²/12 bytes, and at large n graphs rarely recur. Runs check
+for Ctrl-C every 20,000 steps. A step costs about 7 µs at n = 10 and 40 µs at n = 24 in a release
+build, so build release for real runs.
 
 Whole-graph |Aut| and canonical forms use nauty's sparse mode (`sparsenauty`), which scales with
-the number of edges; balls keep the dense mode, which is faster at their size. The Rust tests check
+the number of edges; balls keep the dense mode, which is faster at their size. With an open set,
+open nodes form a second nauty cell, so keys distinguish where the open nodes are and |Aut| counts
+only symmetries that keep them in place. The sampler's statistical tests run millions of steps:
+about 5 s with `cargo test --release`, about 30 s in a debug build. The Rust tests check
 the transition rule's detailed balance exactly on 4 nodes, the chain's distribution with zero and
 random energies, and the recorder's counting against a replayed chain. `tests/test_sampler.py`
 compares real runs with the baseline on a ruleset whose valid graphs are all the cubic graphs.

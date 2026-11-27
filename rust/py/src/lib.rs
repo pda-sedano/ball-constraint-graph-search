@@ -6,11 +6,16 @@
 //! turns them into Python `Issue` objects.
 
 use graph_search_core::{
-    automorphism_count as aut_count, ball_census as census, canonical_graph, compile,
-    parse_graph6 as parse, valid_graphs, BallExtractor, CanonicalKey, CheckReport, Checker,
-    CompiledBall, CompiledRuleset, Edge, EmbedQuery, EmbeddingChecker, EnumerationError, Graph,
-    Issue, IssueCode, Node, Outcome, RecordOptions, Recorder, RulesetEnergy, Sampler, Start,
+    automorphism_count as aut_count, ball_census as census, canonical_graph, canonical_open_graph,
+    compile, parse_graph6 as parse, valid_graphs, valid_open_graphs, BallExtractor, CanonicalKey,
+    CheckReport, Checker, CompiledBall, CompiledRuleset, Edge, EmbedQuery, EmbeddingChecker,
+    EnumerationError, Graph, Issue, IssueCode, Node, Outcome, RecordOptions, Recorder,
+    RulesetEnergy, Sampler, Settings, Start, DEFAULT_SWAP_RATE,
 };
+
+/// `valid_open_graph6`'s result: candidates, open sets checked, and
+/// `(canonical_graph6, open, automorphisms)` per valid class.
+type OpenGraph6Result = (usize, usize, Vec<(String, Vec<Node>, f64)>);
 use pyo3::exceptions::PyOSError;
 use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
@@ -189,21 +194,48 @@ impl PyCompiledRuleset {
         Ok((found.candidates, valid))
     }
 
-    /// Run one sampler chain in closed mode on `num_nodes` nodes, with this
-    /// ruleset's energy and the kept types' largest root degree as the cap.
+    /// The open-mode enumeration for one graph6 file: every graph in it with
+    /// every set of `m` open nodes. Returns `(candidates, open_sets, valid)`
+    /// where `valid` lists `(canonical_graph6, open, automorphisms)` once per
+    /// isomorphism class of valid pairs. Raises OSError if the file cannot be
+    /// read and ValueError for a line that is not graph6.
+    fn valid_open_graph6(&self, path: std::path::PathBuf, m: usize) -> PyResult<OpenGraph6Result> {
+        let file = std::fs::File::open(&path)
+            .map_err(|e| PyOSError::new_err(format!("{}: {e}", path.display())))?;
+        let found = valid_open_graphs(&self.inner, std::io::BufReader::new(file), m).map_err(
+            |e| match e {
+                EnumerationError::Io(e) => PyOSError::new_err(format!("{}: {e}", path.display())),
+                other => PyValueError::new_err(format!("{}: {other}", path.display())),
+            },
+        )?;
+        let valid = found
+            .valid
+            .into_iter()
+            .map(|g| (g.graph6, g.open, g.automorphisms))
+            .collect();
+        Ok((found.candidates, found.open_sets, valid))
+    }
+
+    /// Run one sampler chain on `num_nodes` nodes with this ruleset's energy
+    /// and the kept types' largest root degree as the cap, with exactly
+    /// `open_nodes` open nodes (0 is closed mode).
     ///
     /// Starts from `start_edges` if given, else from `random_start_edges`
-    /// random edges. Runs `burn_in` steps, then records `steps` more. Returns
-    /// a dict: `max_degree`, `stats` (proposed_remove, accepted_remove,
-    /// proposed_add, accepted_add, capped, no_candidate), `valid_steps`,
-    /// `visits` as `(canonical_graph6, steps, automorphisms)` when
-    /// `count_graphs`, `snapshots` as `(step, edges, automorphisms)`, `trace`
-    /// as `(step, energy)`, `final_edges` and `final_energy`. Raises
-    /// ValueError if no type is kept, for a bad β or starting graph, and
+    /// random edges, and from the open set `start_open` if given, else a
+    /// random one. In open mode a step proposes a flag swap with probability
+    /// `swap_rate`. Runs `burn_in` steps, then records `steps` more. Returns a
+    /// dict: `max_degree`, `stats` (proposed_remove, accepted_remove,
+    /// proposed_add, accepted_add, proposed_swap, accepted_swap, capped,
+    /// no_candidate), `valid_steps`, `visits` as `(canonical_graph6, open,
+    /// steps, automorphisms)` when `count_graphs`, `snapshots` as `(step,
+    /// edges, open, automorphisms)`, `trace` as `(step, energy)`,
+    /// `final_edges`, `final_open` and `final_energy`. Raises ValueError if
+    /// no type is kept or for bad settings or a bad start, and
     /// KeyboardInterrupt on Ctrl-C.
     #[pyo3(signature = (
         num_nodes, steps, *, beta=1.0, seed=0, burn_in=0, snapshot_every=None,
         count_graphs=true, trace_every=None, start_edges=None, random_start_edges=0,
+        open_nodes=0, swap_rate=DEFAULT_SWAP_RATE, start_open=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn sample<'py>(
@@ -219,6 +251,9 @@ impl PyCompiledRuleset {
         trace_every: Option<u64>,
         start_edges: Option<Vec<Edge>>,
         random_start_edges: usize,
+        open_nodes: usize,
+        swap_rate: f64,
+        start_open: Option<Vec<Node>>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let ruleset = &self.inner;
         let max_degree = ruleset
@@ -240,15 +275,16 @@ impl PyCompiledRuleset {
                 edges: random_start_edges,
             },
         };
-        let mut sampler = Sampler::new(
-            RulesetEnergy::new(ruleset),
+        let settings = Settings {
             num_nodes,
             max_degree,
             beta,
             seed,
-            start,
-        )
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            open_nodes,
+            swap_rate,
+        };
+        let mut sampler = Sampler::new(RulesetEnergy::new(ruleset), settings, start, start_open)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         let mut recorder = Recorder::new(RecordOptions {
             burn_in,
             steps,
@@ -271,26 +307,33 @@ impl PyCompiledRuleset {
                 stats.accepted_remove,
                 stats.proposed_add,
                 stats.accepted_add,
+                stats.proposed_swap,
+                stats.accepted_swap,
                 stats.capped,
                 stats.no_candidate,
             ),
         )?;
         out.set_item("valid_steps", recorder.valid_steps)?;
-        let mut visits: Vec<(String, u64, f64)> = recorder
+        let mut visits: Vec<(String, Vec<Node>, u64, f64)> = recorder
             .visits
-            .into_iter()
-            .map(|(key, v)| (key, v.steps, v.automorphisms))
+            .into_values()
+            .map(|v| (v.graph6, v.open, v.steps, v.automorphisms))
             .collect();
-        visits.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        visits.sort_by(|a, b| {
+            b.2.cmp(&a.2)
+                .then_with(|| a.0.cmp(&b.0))
+                .then_with(|| a.1.cmp(&b.1))
+        });
         out.set_item("visits", visits)?;
-        let snapshots: Vec<(u64, Vec<Edge>, f64)> = recorder
+        let snapshots: Vec<(u64, Vec<Edge>, Vec<Node>, f64)> = recorder
             .snapshots
             .into_iter()
-            .map(|s| (s.step, s.edges, s.automorphisms))
+            .map(|s| (s.step, s.edges, s.open, s.automorphisms))
             .collect();
         out.set_item("snapshots", snapshots)?;
         out.set_item("trace", recorder.trace)?;
         out.set_item("final_edges", sampler.graph().edges())?;
+        out.set_item("final_open", sampler.open_nodes())?;
         out.set_item("final_energy", sampler.energy())?;
         Ok(out)
     }
@@ -559,6 +602,32 @@ fn canonical_graph6(num_nodes: usize, edges: Vec<Edge>) -> PyResult<(String, f64
     Ok((form.graph6(), form.automorphisms))
 }
 
+/// The canonical graph6, the open nodes' canonical numbers and the number of
+/// symmetries that keep the open set in place, for the graph on nodes
+/// `0..num_nodes` with these edges and open nodes: equal results exactly for
+/// graphs isomorphic with their open sets. Raises ValueError for an invalid
+/// graph or an open node out of range.
+#[pyfunction]
+#[pyo3(signature = (num_nodes, edges, open_nodes=Vec::new()))]
+fn canonical_open_graph6(
+    num_nodes: usize,
+    edges: Vec<Edge>,
+    open_nodes: Vec<Node>,
+) -> PyResult<(String, Vec<Node>, f64)> {
+    let graph = reference_graph(num_nodes, &edges)?;
+    let mut is_open = vec![false; num_nodes];
+    for v in open_nodes {
+        let flag = is_open.get_mut(v as usize).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "open node {v} is out of range for {num_nodes} nodes"
+            ))
+        })?;
+        *flag = true;
+    }
+    let form = canonical_open_graph(&graph, &is_open);
+    Ok((form.graph6(), form.open, form.automorphisms))
+}
+
 /// Every code compiling can report, with its severity: `(code, severity)` pairs.
 /// Python's tests compare these with `report.COMPILE_CODES` and `report.SEVERITY`.
 #[pyfunction]
@@ -581,5 +650,6 @@ fn graph_search_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_graph6, m)?)?;
     m.add_function(wrap_pyfunction!(automorphism_count, m)?)?;
     m.add_function(wrap_pyfunction!(canonical_graph6, m)?)?;
+    m.add_function(wrap_pyfunction!(canonical_open_graph6, m)?)?;
     Ok(())
 }

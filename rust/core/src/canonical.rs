@@ -71,15 +71,20 @@ pub struct CanonicalForm {
     pub labeling: Vec<Node>,
 }
 
-/// A whole graph under nauty's canonical numbering, with its automorphism
-/// count. Two graphs have equal `edges` (and `num_nodes`) exactly when they are
-/// isomorphic.
+/// A whole graph, optionally with an open set, under nauty's canonical
+/// numbering, with its automorphism count. Two graphs have equal `edges`,
+/// `open` (and `num_nodes`) exactly when an isomorphism maps one to the other
+/// and open nodes to open nodes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CanonicalGraph {
     pub num_nodes: usize,
     /// Edges under the canonical numbering, normalized `(min, max)` and sorted.
     pub edges: Vec<Edge>,
-    /// |Aut|, as in [`automorphism_count`].
+    /// The open nodes' canonical numbers, sorted; empty for a closed graph.
+    /// Open nodes form their own color class, numbered after the others, so
+    /// these are always the last `open.len()` numbers.
+    pub open: Vec<Node>,
+    /// |Aut|, counting only the symmetries that map open nodes to open nodes.
     pub automorphisms: f64,
 }
 
@@ -91,11 +96,35 @@ impl CanonicalGraph {
     pub fn graph6(&self) -> String {
         write_graph6(self.num_nodes, &self.edges)
     }
+
+    /// One string for the graph and its open set: the graph6, then for an
+    /// open set `;` and the open nodes' numbers, comma-separated. Equal
+    /// exactly when the two are isomorphic as graphs with open sets.
+    pub fn key(&self) -> String {
+        let mut key = self.graph6();
+        if !self.open.is_empty() {
+            let numbers: Vec<String> = self.open.iter().map(|v| v.to_string()).collect();
+            key.push(';');
+            key.push_str(&numbers.join(","));
+        }
+        key
+    }
 }
 
 /// `graph` under nauty's canonical numbering, with |Aut|.
 pub fn canonical_graph(graph: &Graph) -> CanonicalGraph {
-    let (lab, automorphisms) = sparse_nauty(graph, true);
+    canonical_open_graph(graph, &[])
+}
+
+/// `graph` with the open set `is_open` (indexed by node; empty or all false
+/// for a closed graph) under nauty's canonical numbering, with the number of
+/// symmetries that keep the open set in place.
+///
+/// # Panics
+///
+/// If `is_open` is neither empty nor one entry per node.
+pub fn canonical_open_graph(graph: &Graph, is_open: &[bool]) -> CanonicalGraph {
+    let (lab, automorphisms) = sparse_nauty(graph, true, is_open);
     let mut labeling: Vec<Node> = vec![0; lab.len()];
     for (number, &v) in lab.iter().enumerate() {
         labeling[v as usize] = number as Node;
@@ -109,9 +138,15 @@ pub fn canonical_graph(graph: &Graph) -> CanonicalGraph {
         })
         .collect();
     edges.sort_unstable();
+    let mut open: Vec<Node> = (0..graph.num_nodes())
+        .filter(|&v| is_open.get(v).copied().unwrap_or(false))
+        .map(|v| labeling[v])
+        .collect();
+    open.sort_unstable();
     CanonicalGraph {
         num_nodes: graph.num_nodes(),
         edges,
+        open,
         automorphisms,
     }
 }
@@ -120,13 +155,26 @@ pub fn canonical_graph(graph: &Graph) -> CanonicalGraph {
 /// edge, from nauty's sparse mode. nauty reports it as a double, so it is
 /// exact below 2^53; past that it is the nearest double. 1 for the empty graph.
 pub fn automorphism_count(graph: &Graph) -> f64 {
-    sparse_nauty(graph, false).1
+    sparse_nauty(graph, false, &[]).1
 }
 
-/// Run `sparsenauty` on the whole graph with every node in one cell. Returns
-/// `lab` (with `canonical`, `lab[i]` is the node numbered i) and |Aut|.
-fn sparse_nauty(graph: &Graph, canonical: bool) -> (Vec<c_int>, f64) {
+/// |Aut| counting only symmetries that map open nodes (`is_open`, one entry
+/// per node, or empty for none) to open nodes.
+pub fn open_automorphism_count(graph: &Graph, is_open: &[bool]) -> f64 {
+    sparse_nauty(graph, false, is_open).1
+}
+
+/// Run `sparsenauty` on the whole graph, with the non-open nodes in one cell
+/// and the open nodes in a second cell after it (one cell if either is
+/// empty). Returns `lab` (with `canonical`, `lab[i]` is the node numbered i)
+/// and |Aut| of the colored graph.
+fn sparse_nauty(graph: &Graph, canonical: bool, is_open: &[bool]) -> (Vec<c_int>, f64) {
     let n = graph.num_nodes();
+    assert!(
+        is_open.is_empty() || is_open.len() == n,
+        "is_open has {} entries for {n} nodes",
+        is_open.len()
+    );
     if n == 0 {
         return (Vec::new(), 1.0);
     }
@@ -148,18 +196,30 @@ fn sparse_nauty(graph: &Graph, canonical: bool) -> (Vec<c_int>, f64) {
     let mut output = SparseGraph::new(n, arcs);
     let mut output_raw: sparsegraph = (&mut output).into();
 
-    let mut lab: Vec<c_int> = vec![0; n];
-    let mut ptn: Vec<c_int> = vec![0; n];
+    // The initial partition: non-open nodes, then open nodes. ptn[i] is 0
+    // where a cell ends at position i.
+    let open_count = is_open.iter().filter(|&&o| o).count();
+    let mut lab: Vec<c_int> = (0..n)
+        .filter(|&v| !is_open.get(v).copied().unwrap_or(false))
+        .chain((0..n).filter(|&v| is_open.get(v).copied().unwrap_or(false)))
+        .map(|v| v as c_int)
+        .collect();
+    let mut ptn: Vec<c_int> = vec![1; n];
+    ptn[n - 1] = 0;
+    if open_count > 0 && open_count < n {
+        ptn[n - open_count - 1] = 0;
+    }
     let mut orbits: Vec<c_int> = vec![0; n];
     let mut options = optionblk {
         getcanon: if canonical { TRUE } else { FALSE },
-        defaultptn: TRUE, // one cell: every node may go anywhere
+        defaultptn: FALSE,
         ..optionblk::default_sparse()
     };
     let mut stats = statsblk::default();
     // SAFETY: `input` is a valid sparse graph: n entries in v and d, and the
-    // neighbors of v at e[v[v]..v[v] + d[v]], within e's 2m entries. `lab`,
-    // `ptn` and `orbits` hold n ints, and `output_raw` points at buffers of
+    // neighbors of v at e[v[v]..v[v] + d[v]], within e's 2m entries. `lab`
+    // is a permutation of 0..n and `ptn` ends with 0, a valid partition;
+    // `lab`, `ptn` and `orbits` hold n ints, and `output_raw` points at buffers of
     // the same sizes as `input`'s, which is all nauty needs for the canonical
     // graph. nauty uses thread-local workspace, so concurrent calls are safe.
     unsafe {
@@ -653,6 +713,89 @@ mod tests {
             }
             assert_eq!(ours_to_brute.len(), classes, "n = {n}");
         }
+    }
+
+    /// Brute-force canonical form of a graph with an open set: the smallest
+    /// (open numbers, edges) over every permutation that numbers non-open
+    /// nodes before open ones, as nauty's cells do.
+    fn brute_open_key(edges: &[Edge], n: usize, is_open: &[bool]) -> (Vec<Node>, Vec<Edge>) {
+        let mut nodes: Vec<Node> = (0..n as Node).collect();
+        let open_count = is_open.iter().filter(|&&o| o).count();
+        let mut best: Option<Vec<Edge>> = None;
+        permutations(&mut nodes, 0, &mut |perm| {
+            let keeps_cells = (0..n).all(|v| (perm[v] as usize >= n - open_count) == is_open[v]);
+            if !keeps_cells {
+                return;
+            }
+            let mut relabeled: Vec<Edge> = edges
+                .iter()
+                .map(|&(u, v)| {
+                    let (a, b) = (perm[u as usize], perm[v as usize]);
+                    (a.min(b), a.max(b))
+                })
+                .collect();
+            relabeled.sort_unstable();
+            if best.as_ref().is_none_or(|b| relabeled < *b) {
+                best = Some(relabeled);
+            }
+        });
+        (
+            (n - open_count..n).map(|v| v as Node).collect(),
+            best.unwrap_or_default(),
+        )
+    }
+
+    #[test]
+    fn open_keys_agree_with_brute_force() {
+        //! Every graph on up to 4 nodes with every open set, and random ones on
+        //! 5 nodes: equal keys exactly when brute force finds an isomorphism
+        //! that maps open nodes to open nodes.
+        use crate::graph::Graph;
+        let mut rng = Rng(8);
+        for n in 1..=5usize {
+            let mut ours_to_brute = HashMap::new();
+            let mut brute_to_ours = HashMap::new();
+            for edges in all_graphs(n) {
+                for mask in 0u32..1 << n {
+                    if n == 5 && rng.below(8) != 0 {
+                        continue;
+                    }
+                    let is_open: Vec<bool> = (0..n).map(|v| mask >> v & 1 == 1).collect();
+                    let g = Graph::from_edges(n, n, &edges).expect("valid");
+                    let form = canonical_open_graph(&g, &is_open);
+                    assert_eq!(form.open.len(), mask.count_ones() as usize);
+                    assert_eq!(form.automorphisms, open_automorphism_count(&g, &is_open));
+                    let ours = (form.open.clone(), form.edges.clone());
+                    let brute = brute_open_key(&edges, n, &is_open);
+                    let mapped = ours_to_brute
+                        .entry(ours.clone())
+                        .or_insert_with(|| brute.clone());
+                    assert_eq!(mapped, &brute, "different open graphs share a key");
+                    let mapped = brute_to_ours.entry(brute).or_insert_with(|| ours.clone());
+                    assert_eq!(mapped, &ours, "isomorphic open graphs got different keys");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn open_automorphisms_count_only_symmetries_that_keep_the_open_set() {
+        use crate::graph::Graph;
+        let cycle = Graph::from_edges(4, 2, &[(0, 1), (1, 2), (2, 3), (3, 0)]).expect("valid");
+        let open = |nodes: &[usize]| -> Vec<bool> { (0..4).map(|v| nodes.contains(&v)).collect() };
+        assert_eq!(open_automorphism_count(&cycle, &[]), 8.0);
+        assert_eq!(open_automorphism_count(&cycle, &open(&[0])), 2.0);
+        assert_eq!(open_automorphism_count(&cycle, &open(&[0, 1])), 2.0);
+        assert_eq!(open_automorphism_count(&cycle, &open(&[0, 2])), 4.0);
+        assert_eq!(open_automorphism_count(&cycle, &open(&[0, 1, 2, 3])), 8.0);
+        let form = canonical_open_graph(&cycle, &open(&[0, 2]));
+        assert_eq!(form.open, vec![2, 3]);
+        assert!(form.key().ends_with(";2,3"));
+        assert!(!canonical_graph(&cycle).key().contains(';'));
+        assert_eq!(
+            canonical_graph(&cycle),
+            canonical_open_graph(&cycle, &open(&[]))
+        );
     }
 
     #[test]

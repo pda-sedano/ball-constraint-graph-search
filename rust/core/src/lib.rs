@@ -45,12 +45,16 @@ mod testing;
 
 pub use ball::{check_structure, CompiledBall, Edge, Node};
 pub use canonical::{
-    automorphism_count, canonical_graph, CanonicalForm, CanonicalGraph, CanonicalKey,
+    automorphism_count, canonical_graph, canonical_open_graph, open_automorphism_count,
+    CanonicalForm, CanonicalGraph, CanonicalKey,
 };
 pub use check::{CheckReport, Checker, NodeClass, NodeReport, Outcome};
 pub use compile::{compile, CompileOutcome};
 pub use embed::{EmbedQuery, EmbeddingChecker, STEP_BUDGET};
-pub use enumeration::{valid_graphs, Enumeration, EnumerationError, ValidGraph};
+pub use enumeration::{
+    valid_graphs, valid_open_graphs, Enumeration, EnumerationError, OpenEnumeration, ValidGraph,
+    ValidOpenGraph,
+};
 pub use extract::{ball_census, BallExtractor, CensusEntry, VisibleBall};
 pub use graph::{Graph, GraphError};
 pub use graph6::{parse_graph6, write_graph6, Graph6Error};
@@ -59,5 +63,5 @@ pub use prune::{Pruning, Removal};
 pub use ruleset::CompiledRuleset;
 pub use sample::{
     acceptance, Energy, Move, MoveStats, RecordOptions, Recorder, RulesetEnergy, Sampler,
-    SamplerError, Snapshot, Start, StepResult, Visits, ZeroEnergy,
+    SamplerError, Settings, Snapshot, Start, StepResult, Visits, ZeroEnergy, DEFAULT_SWAP_RATE,
 };
