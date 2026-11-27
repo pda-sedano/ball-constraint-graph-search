@@ -6,9 +6,9 @@ holds what it returns, and does the bookkeeping around it. One chain at a fixed
 Closed mode by default; ``open_nodes=m`` samples graphs with exactly m open
 nodes, which may have neighbors outside the patch::
 
-    from compiled import load_and_compile
-    from enumeration import baseline
-    from sampler import compare_with_baseline, sample, save_snapshots
+    from graph_search.compiled import load_and_compile
+    from graph_search.enumeration import baseline
+    from graph_search.sampler import compare_with_baseline, sample, save_snapshots
 
     compiled, _ = load_and_compile("rulesets/showcase.json")
     run = sample(compiled, n=8, steps=200_000, beta=1.0, seed=1, snapshot_every=1_000)
@@ -17,6 +17,11 @@ nodes, which may have neighbors outside the patch::
     save_snapshots(run, "samples/showcase-n8", ruleset_name="showcase")
     save_run(run, "runs/showcase-n8", ruleset_name="showcase")   # the whole run
     run = load_run("runs/showcase-n8")
+
+    # Parallel tempering: replicas on a beta ladder that trade states.
+    tempered = temper(compiled, n=16, steps=100_000, open_nodes=12, seed=1)
+    print(tempered)                              # per-rung validity, swap rates
+    run = tempered.combined()                    # valid samples from every rung
 
     # Open mode: patches with 2 open nodes, checked against open_level.
     run = sample(compiled, n=6, steps=200_000, open_nodes=2, seed=1)
@@ -56,12 +61,12 @@ from typing import TYPE_CHECKING, Literal
 
 import networkx as nx
 
-from extract import number_nodes
+from .extract import number_nodes
 
 if TYPE_CHECKING:
     from graph_search_rs import CompiledRuleset
 
-    from enumeration import Level
+    from .enumeration import Level
 
 DEFAULT_SWAP_RATE = 0.2
 """In open mode, the share of steps that propose swapping an open node's flag
@@ -309,13 +314,279 @@ def sample(
             above ``COUNT_GRAPHS_MAX_NODES``.
         KeyboardInterrupt: on Ctrl-C, checked every 20,000 steps.
     """
+    count_graphs = _resolve_count(count_graphs, n)
+    start_edges, random_edges, open_numbers = _start_arguments(compiled, n, start, start_open)
+    raw = compiled.sample(
+        n,
+        steps,
+        beta=beta,
+        seed=seed,
+        burn_in=burn_in,
+        snapshot_every=snapshot_every,
+        count_graphs=count_graphs,
+        trace_every=trace_every,
+        start_edges=start_edges,
+        random_start_edges=random_edges,
+        open_nodes=open_nodes,
+        swap_rate=swap_rate,
+        start_open=open_numbers,
+    )
+    return _run_from_raw(
+        raw,
+        num_nodes=n,
+        beta=beta,
+        seed=seed,
+        burn_in=burn_in,
+        steps=steps,
+        max_degree=raw["max_degree"],
+        open_nodes=open_nodes,
+        swap_rate=swap_rate,
+        counted=count_graphs,
+    )
+
+
+def geometric_ladder(beta_min: float, beta_max: float, rungs: int) -> tuple[float, ...]:
+    """``rungs`` inverse temperatures from ``beta_min`` to ``beta_max``, evenly
+    spaced on a log scale: the usual first ladder for tempering."""
+    if rungs < 1:
+        raise ValueError(f"need at least one rung, got {rungs}")
+    if not 0 < beta_min <= beta_max:
+        raise ValueError(f"need 0 < beta_min <= beta_max, got {beta_min} and {beta_max}")
+    if rungs == 1:
+        return (beta_max,)
+    ratio = (beta_max / beta_min) ** (1 / (rungs - 1))
+    return tuple(beta_min * ratio**k for k in range(rungs))
+
+
+DEFAULT_LADDER = (0.25, 4.0, 12)
+"""``temper``'s default ladder: beta_min, beta_max and the number of rungs."""
+
+
+@dataclass(frozen=True)
+class TemperedRun:
+    """Everything a tempered run returned: one ``Run`` per rung, hottest first,
+    and how well the ladder mixed."""
+
+    num_nodes: int
+    open_nodes: int
+    seed: int
+    swap_interval: int
+    rungs: tuple[Run, ...]
+    """One ``Run`` per temperature, hottest first; each ``Run.beta`` is its rung's."""
+    swap_attempts: tuple[int, ...]
+    """Trades proposed between rungs k and k + 1, for each k."""
+    swap_accepts: tuple[int, ...]
+    passages: int
+    """Times a replica crossed the whole ladder, from one end to the other."""
+
+    @property
+    def betas(self) -> tuple[float, ...]:
+        return tuple(r.beta for r in self.rungs)
+
+    @property
+    def swap_rates(self) -> tuple[float, ...]:
+        """Accepted share of trades between each pair of neighbouring rungs. A
+        rate near 0 is a bottleneck: add rungs between those two βs."""
+        return tuple(
+            a / t if t else 0.0 for a, t in zip(self.swap_accepts, self.swap_attempts, strict=True)
+        )
+
+    @property
+    def round_trips(self) -> float:
+        """Hottest-to-coldest-and-back trips, summed over replicas (passages / 2).
+        Few of them means states found at the hot end rarely reach the cold end."""
+        return self.passages / 2
+
+    @property
+    def coldest(self) -> Run:
+        return self.rungs[-1]
+
+    def combined(self, rungs: Iterable[int] | None = None) -> Run:
+        """One ``Run`` pooling the valid samples of the chosen rungs (all by
+        default, by index, 0 the hottest).
+
+        Valid states have energy 0, so at every β they all get the same weight:
+        pooling rungs keeps the samples uniform. Visit counts, valid steps,
+        recorded steps and move counts are summed; snapshots are merged by
+        step. ``beta``, ``trace`` and the final state are the coldest chosen
+        rung's. Works with everything that takes a ``Run``:
+        ``compare_with_baseline``, ``Run.shares``, ``Run.average``, ``save_run``.
+        """
+        chosen = sorted(set(range(len(self.rungs)) if rungs is None else rungs))
+        if not chosen or chosen[0] < 0 or chosen[-1] >= len(self.rungs):
+            raise ValueError(f"rungs must be indices in 0..{len(self.rungs) - 1}, got {chosen}")
+        runs = [self.rungs[k] for k in chosen]
+        cold = runs[-1]
+        visits: dict[tuple[str, tuple[int, ...]], Visit] = {}
+        for run in runs:
+            for v in run.visits:
+                key = (v.graph6, v.open)
+                earlier = visits[key].steps if key in visits else 0
+                visits[key] = Visit(v.graph6, v.open, v.steps + earlier, v.automorphisms)
+        ordered = sorted(visits.values(), key=lambda v: (-v.steps, v.graph6, v.open))
+
+        def total(name: str) -> int:
+            return sum(getattr(run, name) for run in runs)
+
+        return Run(
+            num_nodes=self.num_nodes,
+            beta=cold.beta,
+            seed=self.seed,
+            burn_in=cold.burn_in,
+            steps=total("steps"),
+            max_degree=cold.max_degree,
+            open_nodes=self.open_nodes,
+            swap_rate=cold.swap_rate,
+            proposed_remove=total("proposed_remove"),
+            accepted_remove=total("accepted_remove"),
+            proposed_add=total("proposed_add"),
+            accepted_add=total("accepted_add"),
+            proposed_swap=total("proposed_swap"),
+            accepted_swap=total("accepted_swap"),
+            capped=total("capped"),
+            no_candidate=total("no_candidate"),
+            valid_steps=total("valid_steps"),
+            counted=cold.counted,
+            visits=tuple(ordered),
+            snapshots=tuple(
+                sorted((s for run in runs for s in run.snapshots), key=lambda s: s.step)
+            ),
+            trace=cold.trace,
+            final_edges=cold.final_edges,
+            final_open=cold.final_open,
+            final_energy=cold.final_energy,
+        )
+
+    def __str__(self) -> str:
+        mode = f"{self.open_nodes} open nodes" if self.open_nodes else "closed"
+        cold = self.coldest
+        lines = [
+            (
+                f"n = {self.num_nodes}, {mode}, {len(self.rungs)} rungs, seed = {self.seed}, "
+                f"{cold.burn_in} burn-in + {cold.steps} recorded steps per replica, "
+                f"swaps every {self.swap_interval} steps"
+            ),
+            f"{self.passages} ladder crossings ({self.round_trips:g} round trips)",
+            f"{'beta':>8} {'valid':>8} {'moves':>8} {'states':>7} {'swap up':>8}",
+        ]
+        rates = [*self.swap_rates, None]
+        for run, rate in zip(self.rungs, rates, strict=True):
+            states = str(len(run.visits)) if run.counted else "-"
+            swap = f"{rate:.0%}" if rate is not None else "-"
+            lines.append(
+                f"{run.beta:>8.3f} {run.valid_fraction:>8.1%} {run.acceptance_rate:>8.1%} "
+                f"{states:>7} {swap:>8}"
+            )
+        return "\n".join(lines)
+
+
+def temper(
+    compiled: CompiledRuleset,
+    n: int,
+    steps: int,
+    *,
+    betas: Iterable[float] | None = None,
+    swap_interval: int = 50,
+    threads: int = 0,
+    seed: int = 0,
+    burn_in: int = 0,
+    snapshot_every: int | None = None,
+    count_graphs: bool | None = None,
+    trace_every: int | None = None,
+    start: nx.Graph | Iterable[tuple[int, int]] | Literal["random", "empty"] = "random",
+    open_nodes: int = 0,
+    swap_rate: float = DEFAULT_SWAP_RATE,
+    start_open: Iterable[Hashable] | None = None,
+) -> TemperedRun:
+    """Run parallel tempering: replicas of the chain on a ladder of βs, trading
+    states with their neighbours, so states found by the hot replicas reach
+    the cold ones.
+
+    Args:
+        compiled, n, seed, burn_in, snapshot_every, count_graphs, trace_every,
+        start, open_nodes, swap_rate, start_open: as in ``sample``, applied to
+            every replica. ``steps`` and ``burn_in`` count steps per replica,
+            and a random start gives each replica its own random graph.
+        betas: the ladder, strictly increasing (hottest first). Default:
+            ``geometric_ladder(*DEFAULT_LADDER)``, 12 rungs from 0.25 to 4. The
+            hottest β should let the chain move freely and the coldest keep it
+            valid much of the time; aim for swap rates of roughly 20 to 40%
+            between neighbours, adding rungs where a rate is near 0.
+        swap_interval: steps each replica takes between trades.
+        threads: threads to run replicas on; 0 uses every core. The result does
+            not depend on it.
+
+    The work is the number of rungs times one ``sample`` run. Raises the same
+    errors as ``sample``, and ValueError for a ladder that is empty or not
+    strictly increasing.
+    """
+    ladder = tuple(geometric_ladder(*DEFAULT_LADDER) if betas is None else betas)
+    count_graphs = _resolve_count(count_graphs, n)
+    start_edges, random_edges, open_numbers = _start_arguments(compiled, n, start, start_open)
+    raw = compiled.temper(
+        n,
+        steps,
+        list(ladder),
+        seed=seed,
+        burn_in=burn_in,
+        snapshot_every=snapshot_every,
+        count_graphs=count_graphs,
+        trace_every=trace_every,
+        start_edges=start_edges,
+        random_start_edges=random_edges,
+        open_nodes=open_nodes,
+        swap_rate=swap_rate,
+        start_open=open_numbers,
+        swap_interval=swap_interval,
+        threads=threads,
+    )
+    rungs = tuple(
+        _run_from_raw(
+            rung,
+            num_nodes=n,
+            beta=rung["beta"],
+            seed=seed,
+            burn_in=burn_in,
+            steps=steps,
+            max_degree=raw["max_degree"],
+            open_nodes=open_nodes,
+            swap_rate=swap_rate,
+            counted=count_graphs,
+        )
+        for rung in raw["rungs"]
+    )
+    return TemperedRun(
+        num_nodes=n,
+        open_nodes=open_nodes,
+        seed=seed,
+        swap_interval=swap_interval,
+        rungs=rungs,
+        swap_attempts=tuple(a for a, _ in raw["pairs"]),
+        swap_accepts=tuple(a for _, a in raw["pairs"]),
+        passages=raw["passages"],
+    )
+
+
+def _resolve_count(count_graphs: bool | None, n: int) -> bool:
+    """``count_graphs``'s default (on up to ``COUNT_GRAPHS_MAX_NODES``) and its limit."""
     if count_graphs is None:
-        count_graphs = n <= COUNT_GRAPHS_MAX_NODES
-    elif count_graphs and n > COUNT_GRAPHS_MAX_NODES:
+        return n <= COUNT_GRAPHS_MAX_NODES
+    if count_graphs and n > COUNT_GRAPHS_MAX_NODES:
         raise ValueError(
             f"count_graphs is for n up to {COUNT_GRAPHS_MAX_NODES}, not {n}: each key takes "
             f"about n^2/12 bytes and graphs rarely recur at this size; use snapshots instead"
         )
+    return bool(count_graphs)
+
+
+def _start_arguments(
+    compiled: CompiledRuleset,
+    n: int,
+    start: nx.Graph | Iterable[tuple[int, int]] | str,
+    start_open: Iterable[Hashable] | None,
+) -> tuple[list[tuple[int, int]] | None, int, list[int] | None]:
+    """The binding's start arguments: given edges or None, the number of random
+    edges, and the open set as numbers or None."""
     start_edges: list[tuple[int, int]] | None = None
     random_edges = 0
     open_numbers: list[int] | None = None
@@ -338,32 +609,15 @@ def sample(
         start_edges = [(int(u), int(v)) for u, v in start]
     if start_open is not None and open_numbers is None:
         open_numbers = [int(v) for v in start_open]
+    return start_edges, random_edges, open_numbers
 
-    raw = compiled.sample(
-        n,
-        steps,
-        beta=beta,
-        seed=seed,
-        burn_in=burn_in,
-        snapshot_every=snapshot_every,
-        count_graphs=count_graphs,
-        trace_every=trace_every,
-        start_edges=start_edges,
-        random_start_edges=random_edges,
-        open_nodes=open_nodes,
-        swap_rate=swap_rate,
-        start_open=open_numbers,
-    )
+
+def _run_from_raw(raw: dict, **fields) -> Run:
+    """A ``Run`` from one recorded chain as the binding returns it, plus the
+    settings in ``fields``."""
     stats = raw["stats"]
     return Run(
-        num_nodes=n,
-        beta=beta,
-        seed=seed,
-        burn_in=burn_in,
-        steps=steps,
-        max_degree=raw["max_degree"],
-        open_nodes=open_nodes,
-        swap_rate=swap_rate,
+        **fields,
         proposed_remove=stats[0],
         accepted_remove=stats[1],
         proposed_add=stats[2],
@@ -373,7 +627,6 @@ def sample(
         capped=stats[6],
         no_candidate=stats[7],
         valid_steps=raw["valid_steps"],
-        counted=count_graphs,
         visits=tuple(
             Visit(g6, tuple(open_set), count, round(aut))
             for g6, open_set, count, aut in raw["visits"]
@@ -382,7 +635,7 @@ def sample(
             Snapshot(step, tuple(map(tuple, edges)), round(aut), tuple(open_set))
             for step, edges, open_set, aut in raw["snapshots"]
         ),
-        trace=tuple(raw["trace"]),
+        trace=tuple(map(tuple, raw["trace"])),
         final_edges=tuple(map(tuple, raw["final_edges"])),
         final_open=tuple(raw["final_open"]),
         final_energy=raw["final_energy"],
@@ -567,15 +820,24 @@ def save_snapshots(
     Raises:
         ValueError: ``metadata`` uses a reserved key.
     """
-    from graph_io import save_graph
+    from .graph_io import save_graph
 
     _check_metadata_keys(metadata)
     folder = Path(directory)
     folder.mkdir(parents=True, exist_ok=True)
     width = len(str(run.burn_in + run.steps))
     paths = []
+    used: set[str] = set()
     for snapshot in run.snapshots:
-        path = folder / f"step-{snapshot.step:0{width}d}.safetensors"
+        # A combined tempered run can hold snapshots from several rungs at the
+        # same step; later ones get a suffix rather than overwriting.
+        name = f"step-{snapshot.step:0{width}d}"
+        suffix = 1
+        while name in used:
+            name = f"step-{snapshot.step:0{width}d}-{suffix}"
+            suffix += 1
+        used.add(name)
+        path = folder / f"{name}.safetensors"
         save_graph(
             path,
             snapshot.to_networkx(run.num_nodes),
@@ -655,14 +917,16 @@ def save_run(
             are removed first (only those a save writes).
         ValueError: ``metadata`` uses a reserved key.
     """
-    from graph_io import save_graph
+    from .graph_io import save_graph
 
     _check_metadata_keys(metadata)
     root = Path(folder)
     record_path = root / RUN_FILE
     final_path = root / FINAL_FILE
     snapshot_dir = root / SNAPSHOT_FOLDER
-    old_snapshots = sorted(snapshot_dir.glob("step-*.safetensors")) if snapshot_dir.is_dir() else []
+    old_snapshots = (
+        sorted(snapshot_dir.glob("step-*.safetensors")) if snapshot_dir.is_dir() else []
+    )
     if record_path.exists() or final_path.exists() or old_snapshots:
         if not overwrite:
             raise FileExistsError(
@@ -806,7 +1070,7 @@ def load_run(folder: str | PathLike[str]) -> Run:
 
 def _load_run_graph(path: Path, num_nodes: int):
     """A graph file of a saved run, checked and matched to the run's n."""
-    from graph_io import load_graph
+    from .graph_io import load_graph
 
     if not path.exists():
         raise FileNotFoundError(f"{path} not found")

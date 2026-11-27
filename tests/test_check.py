@@ -10,13 +10,13 @@ import pytest
 pytest.importorskip("graph_search_rs")
 
 import oracle  # noqa: E402
-from balltype import BallType  # noqa: E402
-from check import check_file, check_graph  # noqa: E402
-from compiled import compile_ruleset, load_and_compile  # noqa: E402
-from extract import ruleset_from_graph  # noqa: E402
-from graph_io import save_graph  # noqa: E402
-from report import RulesetError  # noqa: E402
-from ruleset import Ruleset  # noqa: E402
+from graph_search.balltype import BallType  # noqa: E402
+from graph_search.check import check_file, check_graph  # noqa: E402
+from graph_search.compiled import compile_ruleset, load_and_compile  # noqa: E402
+from graph_search.extract import ruleset_from_graph  # noqa: E402
+from graph_search.graph_io import save_graph  # noqa: E402
+from graph_search.report import RulesetError  # noqa: E402
+from graph_search.ruleset import Ruleset  # noqa: E402
 
 
 @pytest.fixture

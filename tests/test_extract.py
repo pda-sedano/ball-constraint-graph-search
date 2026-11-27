@@ -12,10 +12,10 @@ import pytest
 
 pytest.importorskip("graph_search_rs")
 
-from compiled import compile_ruleset  # noqa: E402
-from extract import extract_ball, ruleset_from_graph  # noqa: E402
-from report import IssueCode  # noqa: E402
-from ruleset_io import load_ruleset, save_ruleset  # noqa: E402
+from graph_search.compiled import compile_ruleset  # noqa: E402
+from graph_search.extract import extract_ball, ruleset_from_graph  # noqa: E402
+from graph_search.report import IssueCode  # noqa: E402
+from graph_search.ruleset_io import load_ruleset, save_ruleset  # noqa: E402
 
 
 def random_graph(rng, n, m):

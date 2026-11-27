@@ -4,10 +4,10 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from balltype import BallType
-from report import SEVERITY, IssueCode, RulesetError, Severity
-from ruleset import Ruleset
-from ruleset_io import (
+from graph_search.balltype import BallType
+from graph_search.report import SEVERITY, IssueCode, RulesetError, Severity
+from graph_search.ruleset import Ruleset
+from graph_search.ruleset_io import (
     TOP_LEVEL_OPTIONAL,
     TOP_LEVEL_REQUIRED,
     TYPE_OPTIONAL,
@@ -137,7 +137,7 @@ def test_compile_fixture_loads_in_python(fixtures_dir, filename, code):
 def test_compile_fixture_reports(fixtures_dir, filename, code):
     """Loading then compiling reports code; errors give no compiled ruleset."""
     pytest.importorskip("graph_search_rs")
-    from compiled import load_and_compile
+    from graph_search.compiled import load_and_compile
 
     compiled, report = load_and_compile(fixtures_dir / filename)
     assert code in report.codes()

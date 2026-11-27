@@ -1,7 +1,12 @@
 import pytest
 
-from balltype import MAX_NODE, BallType, InvalidBallError, check_edge_format
-from report import IssueCode
+from graph_search.balltype import (
+    MAX_NODE,
+    BallType,
+    InvalidBallError,
+    check_edge_format,
+)
+from graph_search.report import IssueCode
 
 STAR = [[0, 1], [1, 2], [1, 3]]
 

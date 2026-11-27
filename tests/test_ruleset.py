@@ -1,8 +1,8 @@
 import pytest
 
-from balltype import BallType
-from report import IssueCode, LoadReport, Severity
-from ruleset import Ruleset, check_ruleset
+from graph_search.balltype import BallType
+from graph_search.report import IssueCode, LoadReport, Severity
+from graph_search.ruleset import Ruleset, check_ruleset
 
 EDGE = BallType.from_edges([[0, 1]])  # depth 1
 STAR = BallType.from_edges([[0, 1], [1, 2], [1, 3]])  # depth 2

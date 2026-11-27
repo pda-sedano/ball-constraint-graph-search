@@ -15,21 +15,28 @@ import pytest
 
 pytest.importorskip("graph_search_rs")
 
-from balltype import BallType  # noqa: E402
-from check import check_graph  # noqa: E402
-from compiled import compile_ruleset, load_and_compile  # noqa: E402
-from enumeration import GengNotFound, Level, ValidGraph, find_geng  # noqa: E402
-from graph_io import load_graph  # noqa: E402
-from ruleset import Ruleset  # noqa: E402
-from sampler import (  # noqa: E402
+from graph_search.balltype import BallType  # noqa: E402
+from graph_search.check import check_graph  # noqa: E402
+from graph_search.compiled import compile_ruleset, load_and_compile  # noqa: E402
+from graph_search.enumeration import (  # noqa: E402
+    GengNotFound,
+    Level,
+    ValidGraph,
+    find_geng,
+)
+from graph_search.graph_io import load_graph  # noqa: E402
+from graph_search.ruleset import Ruleset  # noqa: E402
+from graph_search.sampler import (  # noqa: E402
     canonical_graph6,
     canonical_key,
     compare_with_baseline,
     default_start_edges,
+    geometric_ladder,
     load_run,
     sample,
     save_run,
     save_snapshots,
+    temper,
 )
 
 RULESETS_DIR = Path(__file__).parent.parent / "rulesets"
@@ -147,7 +154,7 @@ def test_cubic_graphs_on_eight_nodes_match_the_enumeration(cubic, tmp_path):
     weights the cube's rare visits 12 times as heavily as the least symmetric
     graph's, so its estimate is noisier (worst of 10 seeds: 0.060 against 0.038
     numbered) and gets a looser limit."""
-    from enumeration import baseline
+    from graph_search.enumeration import baseline
 
     level = baseline(cubic, 8, min_n=8, root=tmp_path).levels[8]
     assert sorted(v.automorphisms for v in level.valid) == [4, 12, 16, 16, 48]
@@ -203,7 +210,7 @@ def test_compare_needs_matching_n_and_counts(path_ball):
 def test_counting_is_automatic_for_small_n_and_refused_for_large(path_ball):
     """Counting keys are graph6, about n^2/12 bytes each, and graphs rarely recur at
     large n: on by default up to the limit, off above it, and refused if asked for."""
-    from sampler import COUNT_GRAPHS_MAX_NODES as limit
+    from graph_search.sampler import COUNT_GRAPHS_MAX_NODES as limit
 
     assert sample(path_ball, limit, 10).counted
     large = sample(path_ball, limit + 1, 2_000, seed=2, snapshot_every=100)
@@ -241,7 +248,7 @@ def atlas():
 def test_open_level_of_the_path_ball():
     """n = 6, two open nodes: the 6-cycle with the open pair at distance 1, 2 or 3,
     and the 6-path with both ends open."""
-    from enumeration import open_level
+    from graph_search.enumeration import open_level
 
     compiled, _ = load_and_compile(RULESETS_DIR / "path-ball-r2.json")
     level = open_level(compiled, 6, 2, graphs=atlas())
@@ -255,7 +262,7 @@ def test_open_level_of_the_path_ball():
 
 
 def test_open_path_ball_runs_match_the_enumeration(path_ball):
-    from enumeration import open_level
+    from graph_search.enumeration import open_level
 
     level = open_level(path_ball, 6, 2, graphs=atlas())
     run = sample(path_ball, 6, 300_000, open_nodes=2, burn_in=5_000, seed=1)
@@ -269,7 +276,7 @@ def test_open_path_ball_runs_match_the_enumeration(path_ball):
 def test_open_cubic_runs_match_the_enumeration(cubic):
     """Cubic r = 1 with two open nodes on 6 nodes: open nodes may have degree 1 to 3,
     every other node exactly 3, so many more classes than in closed mode."""
-    from enumeration import open_level
+    from graph_search.enumeration import open_level
 
     level = open_level(cubic, 6, 2, graphs=atlas())
     assert len(level.valid) > 2
@@ -281,7 +288,7 @@ def test_open_cubic_runs_match_the_enumeration(cubic):
 
 @pytest.mark.skipif(not _geng_available(), reason="geng (nauty) not found")
 def test_open_level_from_geng_matches_the_atlas(cubic, tmp_path):
-    from enumeration import open_level
+    from graph_search.enumeration import open_level
 
     for m in (1, 2, 3):
         ours = open_level(cubic, 6, m, root=tmp_path)
@@ -506,3 +513,102 @@ def test_load_run_errors(path_ball, tmp_path):
 
 def run_snapshot_name(folder):
     return json.loads((folder / "run.json").read_text())["snapshots"][0]["file"]
+
+
+# --- parallel tempering ---------------------------------------------------------------
+
+
+def test_geometric_ladder():
+    ladder = geometric_ladder(0.5, 8.0, 5)
+    assert ladder == pytest.approx((0.5, 1.0, 2.0, 4.0, 8.0))
+    assert geometric_ladder(0.5, 8.0, 1) == (8.0,)
+    for bad in [(1.0, 2.0, 0), (0.0, 2.0, 3), (2.0, 1.0, 3)]:
+        with pytest.raises(ValueError):
+            geometric_ladder(*bad)
+
+
+def test_tempering_reaches_states_one_cold_chain_misses():
+    """Cornerless patches, n = 12 with 8 open nodes: a chain held at beta = 4 sits
+    in a few valid states, while the same beta at the cold end of a ladder keeps
+    receiving new ones from the hot replicas."""
+    compiled, _ = load_and_compile(RULESETS_DIR / "cornerless-patch-r3.json")
+    single = sample(compiled, 12, 6_000, open_nodes=8, seed=4, beta=4.0)
+    tempered = temper(
+        compiled, 12, 6_000, open_nodes=8, seed=4, betas=geometric_ladder(1.0, 4.0, 6)
+    )
+    assert tempered.coldest.beta == pytest.approx(4.0)
+    assert len(tempered.coldest.visits) > len(single.visits)
+    assert len(tempered.combined().visits) > 2 * len(single.visits)
+    assert tempered.passages > 0 and all(0 < rate <= 1 for rate in tempered.swap_rates)
+
+
+def test_combined_tempered_run_matches_the_enumeration(cubic):
+    """Valid states have energy 0, so every rung samples them uniformly and pooling
+    rungs keeps that: the pooled run matches the open cubic enumeration."""
+    from graph_search.enumeration import open_level
+
+    level = open_level(cubic, 6, 2, graphs=atlas())
+    tempered = temper(
+        cubic, 6, 100_000, betas=(0.5, 1.0, 2.0, 4.0), open_nodes=2, burn_in=2_000, seed=5
+    )
+    comparison = compare_with_baseline(tempered.combined(), level)
+    assert not comparison.unexpected
+    assert comparison.total_variation < 0.05, comparison
+    for rung in tempered.rungs[2:]:
+        assert compare_with_baseline(rung, level).total_variation < 0.08
+
+
+def test_tempering_ignores_the_thread_count(path_ball):
+    runs = [
+        temper(path_ball, 8, 3_000, betas=(0.5, 1.0, 2.0), seed=7, snapshot_every=500, threads=t)
+        for t in (1, 3, 0)
+    ]
+    assert runs[0] == runs[1] == runs[2]
+    other = temper(path_ball, 8, 3_000, betas=(0.5, 1.0, 2.0), seed=8, snapshot_every=500)
+    assert other != runs[0]
+
+
+def test_combined_pools_the_chosen_rungs(path_ball):
+    tempered = temper(
+        path_ball, 8, 4_000, betas=(0.5, 1.0, 2.0, 4.0), seed=2, snapshot_every=1_000
+    )
+    pooled = tempered.combined()
+    assert pooled.steps == 4 * 4_000
+    assert pooled.valid_steps == sum(r.valid_steps for r in tempered.rungs)
+    assert sum(v.steps for v in pooled.visits) == pooled.valid_steps
+    assert pooled.proposed_add == sum(r.proposed_add for r in tempered.rungs)
+    assert len(pooled.snapshots) == sum(len(r.snapshots) for r in tempered.rungs)
+    assert [s.step for s in pooled.snapshots] == sorted(s.step for s in pooled.snapshots)
+    assert (pooled.beta, pooled.final_edges) == (4.0, tempered.coldest.final_edges)
+    cold_pair = tempered.combined([3, 2])
+    assert cold_pair.valid_steps == tempered.rungs[2].valid_steps + tempered.rungs[3].valid_steps
+    assert cold_pair.beta == 4.0
+    assert tempered.combined([1]).visits == tempered.rungs[1].visits
+    for bad in ([], [4], [-1]):
+        with pytest.raises(ValueError):
+            tempered.combined(bad)
+    text = str(tempered)
+    assert "4 rungs" in text and "swap up" in text and "round trips" in text
+
+
+def test_combined_run_round_trips_with_shared_snapshot_steps(path_ball, tmp_path):
+    tempered = temper(path_ball, 8, 2_000, betas=(1.0, 2.0, 4.0), seed=1, snapshot_every=500)
+    pooled = tempered.combined()
+    assert len({s.step for s in pooled.snapshots}) < len(pooled.snapshots)
+    folder = save_run(pooled, tmp_path / "pooled")
+    names = sorted(p.name for p in (folder / "snapshots").iterdir())
+    assert len(names) == len(pooled.snapshots) == 12
+    assert "step-0500.safetensors" in names and "step-0500-2.safetensors" in names
+    assert load_run(folder) == pooled
+
+
+def test_tempering_errors(path_ball):
+    for betas in [(), (1.0, 1.0), (2.0, 1.0), (-1.0, 1.0), (1.0, float("inf"))]:
+        with pytest.raises(ValueError):
+            temper(path_ball, 8, 100, betas=betas)
+    with pytest.raises(ValueError):
+        temper(path_ball, 8, 100, betas=(1.0, 2.0), swap_interval=0)
+    with pytest.raises(ValueError, match="more than the 8 nodes"):
+        temper(path_ball, 8, 100, betas=(1.0, 2.0), open_nodes=9)
+    with pytest.raises(ValueError, match="swap_rate"):
+        temper(path_ball, 8, 100, betas=(1.0, 2.0), open_nodes=2, swap_rate=-0.1)

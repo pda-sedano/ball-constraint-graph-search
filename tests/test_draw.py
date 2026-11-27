@@ -1,8 +1,8 @@
 import pytest
 
-from balltype import BallType
-from draw import PADDING, layered_positions, layout_components, panel_notes
-from ruleset import Ruleset
+from graph_search.balltype import BallType
+from graph_search.draw import PADDING, layered_positions, layout_components, panel_notes
+from graph_search.ruleset import Ruleset
 
 BALLS = {
     "single": [],
@@ -125,7 +125,7 @@ def plt():
 @each_ball
 def test_draw_ball_keeps_every_node_inside_the_axes(plt, edges):
     """Limits leave PADDING around every node center, and aspect is equal."""
-    from draw import draw_ball
+    from graph_search.draw import draw_ball
 
     ball = BallType.from_edges(edges)
     ax = draw_ball(ball)
@@ -138,7 +138,7 @@ def test_draw_ball_keeps_every_node_inside_the_axes(plt, edges):
 
 def test_draw_ruleset_panels_share_one_scale(plt):
     """Every panel spans the same data width and height, so spacing is comparable."""
-    from draw import draw_ruleset
+    from graph_search.draw import draw_ruleset
 
     types = tuple(BallType.from_edges(edges, label=name) for name, edges in BALLS.items())
     fig = draw_ruleset(Ruleset(name="all", r=2, types=types))
@@ -152,7 +152,7 @@ def test_draw_ruleset_panels_share_one_scale(plt):
 
 
 def test_draw_ruleset_titles_carry_notes(plt):
-    from draw import draw_ruleset
+    from graph_search.draw import draw_ruleset
 
     types = (BallType.from_edges(BALLS["star"], label="ok"), BallType.from_edges(BALLS["rootless"]))
     fig = draw_ruleset(Ruleset(name="x", r=2, types=types))
@@ -172,7 +172,7 @@ def small_baseline():
     """A hand-made baseline: two graphs at n = 6, one at n = 8, none at n = 7."""
     import networkx as nx
 
-    from enumeration import Baseline, Level, ValidGraph
+    from graph_search.enumeration import Baseline, Level, ValidGraph
 
     def level(n, graphs):
         return Level(n, 10, tuple(ValidGraph(g6(g), aut) for g, aut in graphs))
@@ -191,7 +191,7 @@ def small_baseline():
 def test_edge_crossings():
     import networkx as nx
 
-    from draw import edge_crossings
+    from graph_search.draw import edge_crossings
 
     square = {0: (0, 0), 1: (1, 0), 2: (1, 1), 3: (0, 1)}
     assert edge_crossings(nx.cycle_graph(4), square) == 0
@@ -204,7 +204,7 @@ def test_edge_crossings():
 def test_graph_positions_are_repeatable_and_fill_the_unit_square():
     import networkx as nx
 
-    from draw import graph_positions
+    from graph_search.draw import graph_positions
 
     graph = nx.petersen_graph()
     first, second = graph_positions(graph), graph_positions(graph)
@@ -220,7 +220,7 @@ def test_graph_positions_are_repeatable_and_fill_the_unit_square():
 def test_tutte_layout_applies_only_to_3_connected_planar_graphs():
     import networkx as nx
 
-    from draw import edge_crossings, tutte_layout
+    from graph_search.draw import edge_crossings, tutte_layout
 
     cube = nx.convert_node_labels_to_integers(nx.hypercube_graph(3))
     positions = tutte_layout(cube)
@@ -238,7 +238,7 @@ def test_cycles_and_planar_graphs_are_drawn_without_crossings(n):
     """A single spring run drew the hexagon as a figure eight; picking by crossings fixes that."""
     import networkx as nx
 
-    from draw import edge_crossings, graph_positions
+    from graph_search.draw import edge_crossings, graph_positions
 
     for graph in (nx.cycle_graph(n), nx.circular_ladder_graph(n), nx.hypercube_graph(3)):
         graph = nx.convert_node_labels_to_integers(graph)
@@ -248,7 +248,7 @@ def test_cycles_and_planar_graphs_are_drawn_without_crossings(n):
 def test_draw_graph_keeps_every_node_inside_the_axes(plt):
     import networkx as nx
 
-    from draw import draw_graph, graph_positions
+    from graph_search.draw import draw_graph, graph_positions
 
     graph = nx.hypercube_graph(3)
     ax = draw_graph(graph)
@@ -259,7 +259,7 @@ def test_draw_graph_keeps_every_node_inside_the_axes(plt):
 
 
 def test_draw_baseline_panels_in_order_with_aut(plt):
-    from draw import draw_baseline
+    from graph_search.draw import draw_baseline
 
     fig = draw_baseline(small_baseline(), title="toy")
     titles = [ax.get_title() for ax in fig.axes if ax.has_data()]
@@ -268,7 +268,7 @@ def test_draw_baseline_panels_in_order_with_aut(plt):
 
 
 def test_draw_baseline_limit_and_sizes(plt):
-    from draw import draw_baseline
+    from graph_search.draw import draw_baseline
 
     fig = draw_baseline(small_baseline(), limit=2)
     assert len([ax for ax in fig.axes if ax.has_data()]) == 2
@@ -279,7 +279,7 @@ def test_draw_baseline_limit_and_sizes(plt):
 
 
 def test_draw_baseline_with_nothing_to_show(plt):
-    from draw import draw_baseline
+    from graph_search.draw import draw_baseline
 
     fig = draw_baseline(small_baseline(), sizes=[7])
     assert not [ax for ax in fig.axes if ax.has_data()]
@@ -293,7 +293,7 @@ def test_draw_baseline_with_nothing_to_show(plt):
 def test_draw_graphs_checks_its_arguments(plt):
     import networkx as nx
 
-    from draw import draw_graphs
+    from graph_search.draw import draw_graphs
 
     with pytest.raises(ValueError, match="ncols"):
         draw_graphs([nx.path_graph(3)], ncols=0)

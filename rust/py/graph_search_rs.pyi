@@ -89,6 +89,26 @@ class CompiledRuleset:
     ) -> dict[str, Any]:
         """One sampler chain with exactly open_nodes open nodes (0 is closed mode).
         sampler.sample wraps this; see it for the keys."""
+    def temper(
+        self,
+        num_nodes: int,
+        steps: int,
+        betas: list[float],
+        *,
+        seed: int = 0,
+        burn_in: int = 0,
+        snapshot_every: int | None = None,
+        count_graphs: bool = True,
+        trace_every: int | None = None,
+        start_edges: list[tuple[int, int]] | None = None,
+        random_start_edges: int = 0,
+        open_nodes: int = 0,
+        swap_rate: float = 0.2,
+        start_open: list[int] | None = None,
+        swap_interval: int = 50,
+        threads: int = 0,
+    ) -> dict[str, Any]:
+        """Parallel tempering over the beta ladder. sampler.temper wraps this."""
     def valid_open_graph6(
         self, path: str | os.PathLike[str], m: int
     ) -> tuple[int, int, list[tuple[str, list[int], float]]]:

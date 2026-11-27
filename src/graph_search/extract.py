@@ -10,8 +10,8 @@ this module imports the ``graph_search_rs`` extension only when called.
 Example::
 
     import networkx as nx
-    from extract import ruleset_from_graph
-    from ruleset_io import save_ruleset
+    from graph_search.extract import ruleset_from_graph
+    from graph_search.ruleset_io import save_ruleset
 
     grid = nx.grid_2d_graph(6, 6)                # open grid: corner, edge, interior shapes
     save_ruleset(ruleset_from_graph(grid, r=2, name="6x6 grid"), "rulesets/grid.json")
@@ -24,8 +24,8 @@ from typing import Any, NamedTuple
 
 import networkx as nx
 
-from balltype import BallType
-from ruleset import Ruleset
+from .balltype import BallType
+from .ruleset import Ruleset
 
 
 class ExtractedBall(NamedTuple):

@@ -51,6 +51,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ball::{Edge, Node};
 use crate::canonical::{canonical_open_graph, open_automorphism_count, CanonicalGraph};
@@ -250,8 +251,14 @@ pub fn acceptance(mv: Move, edges: usize, pairs: usize, delta: f64, beta: f64) -
     ((-beta * delta).exp() * proposal_ratio).min(1.0)
 }
 
+/// Gives every sampler a distinct id, so a recorder that sees several
+/// samplers (one per temperature, in tempering) never mixes up their states.
+static NEXT_SAMPLER_ID: AtomicU64 = AtomicU64::new(0);
+
 /// One chain.
 pub struct Sampler<E> {
+    /// Unique in this process; see [`Sampler::id`].
+    id: u64,
     energy_fn: E,
     graph: Graph,
     /// Every edge once, in no order, so a uniformly random one is one draw.
@@ -356,6 +363,7 @@ impl<E: Energy> Sampler<E> {
         let edges = graph.edges();
         let energy = energy_fn.energy(&graph, &is_open);
         Ok(Sampler {
+            id: NEXT_SAMPLER_ID.fetch_add(1, Ordering::Relaxed),
             energy_fn,
             graph,
             edges,
@@ -394,6 +402,27 @@ impl<E: Energy> Sampler<E> {
 
     pub fn beta(&self) -> f64 {
         self.beta
+    }
+
+    /// Change β, as tempering does when two replicas trade temperatures.
+    /// The energy does not depend on β, so nothing is recomputed.
+    ///
+    /// # Panics
+    ///
+    /// If `beta` is not finite and at least 0.
+    pub fn set_beta(&mut self, beta: f64) {
+        assert!(
+            beta.is_finite() && beta >= 0.0,
+            "beta must be finite and >= 0, got {beta}"
+        );
+        self.beta = beta;
+    }
+
+    /// An id no other sampler in this process has. With [`Sampler::version`]
+    /// it identifies a state, which the recorder uses to skip recomputing a
+    /// canonical form.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     pub fn steps(&self) -> u64 {
@@ -573,9 +602,13 @@ pub struct Recorder {
     pub snapshots: Vec<Snapshot>,
     /// `(step, energy)` pairs, when `trace_every` is set.
     pub trace: Vec<(u64, f64)>,
-    /// The sampler version and canonical form of the last valid state keyed,
-    /// so a state that has not changed is not canonicalized again.
-    cached: Option<(u64, String, CanonicalGraph)>,
+    /// What the recorded steps did, burn-in included.
+    pub moves: MoveStats,
+    /// The sampler id and version and the canonical form of the last valid
+    /// state keyed, so a state that has not changed is not canonicalized
+    /// again. The id matters in tempering, where one recorder sees several
+    /// samplers.
+    cached: Option<(u64, u64, String, CanonicalGraph)>,
 }
 
 impl Recorder {
@@ -587,6 +620,7 @@ impl Recorder {
             visits: HashMap::new(),
             snapshots: Vec::new(),
             trace: Vec::new(),
+            moves: MoveStats::default(),
             cached: None,
         }
     }
@@ -604,51 +638,84 @@ impl Recorder {
     pub fn advance<E: Energy>(&mut self, sampler: &mut Sampler<E>, max_steps: u64) -> u64 {
         let count = max_steps.min(self.remaining());
         for _ in 0..count {
-            sampler.step();
-            self.done += 1;
-            if self.done <= self.options.burn_in {
-                continue;
-            }
-            let t = self.done - self.options.burn_in;
-            if self.options.trace_every.is_some_and(|k| t % k == 0) {
-                self.trace.push((sampler.steps(), sampler.energy()));
-            }
-            if sampler.energy() != 0.0 {
-                continue;
-            }
-            self.valid_steps += 1;
-            if self.options.count_graphs {
-                self.refresh(sampler);
-                let (_, key, form) = self.cached.as_ref().expect("just refreshed");
-                self.visits
-                    .entry(key.clone())
-                    .or_insert_with(|| Visits {
-                        steps: 0,
-                        graph6: form.graph6(),
-                        open: form.open.clone(),
-                        automorphisms: form.automorphisms,
-                    })
-                    .steps += 1;
-            }
-            if self.options.snapshot_every.is_some_and(|k| t % k == 0) {
-                let automorphisms = if self.options.count_graphs {
-                    self.cached
-                        .as_ref()
-                        .expect("refreshed above")
-                        .2
-                        .automorphisms
-                } else {
-                    open_automorphism_count(sampler.graph(), sampler.is_open())
-                };
-                self.snapshots.push(Snapshot {
-                    step: sampler.steps(),
-                    edges: sampler.graph().edges(),
-                    open: sampler.open_nodes(),
-                    automorphisms,
-                });
-            }
+            let result = sampler.step();
+            self.record(sampler, result);
         }
         count
+    }
+
+    /// Record one step that `sampler` just took, with its result. Use this
+    /// when something else drives the sampler, as tempering does (one
+    /// recorder per temperature, fed by whichever replica holds it).
+    pub fn record<E: Energy>(&mut self, sampler: &Sampler<E>, result: StepResult) {
+        self.count_move(result);
+        self.done += 1;
+        if self.done <= self.options.burn_in {
+            return;
+        }
+        let t = self.done - self.options.burn_in;
+        if self.options.trace_every.is_some_and(|k| t % k == 0) {
+            self.trace.push((sampler.steps(), sampler.energy()));
+        }
+        if sampler.energy() != 0.0 {
+            return;
+        }
+        self.valid_steps += 1;
+        if self.options.count_graphs {
+            self.refresh(sampler);
+            let (_, _, key, form) = self.cached.as_ref().expect("just refreshed");
+            self.visits
+                .entry(key.clone())
+                .or_insert_with(|| Visits {
+                    steps: 0,
+                    graph6: form.graph6(),
+                    open: form.open.clone(),
+                    automorphisms: form.automorphisms,
+                })
+                .steps += 1;
+        }
+        if self.options.snapshot_every.is_some_and(|k| t % k == 0) {
+            let automorphisms = if self.options.count_graphs {
+                self.cached
+                    .as_ref()
+                    .expect("refreshed above")
+                    .3
+                    .automorphisms
+            } else {
+                open_automorphism_count(sampler.graph(), sampler.is_open())
+            };
+            self.snapshots.push(Snapshot {
+                step: sampler.steps(),
+                edges: sampler.graph().edges(),
+                open: sampler.open_nodes(),
+                automorphisms,
+            });
+        }
+    }
+
+    fn count_move(&mut self, result: StepResult) {
+        let m = &mut self.moves;
+        let (kind, accepted) = match result {
+            StepResult::Accepted(kind) => (kind, true),
+            StepResult::Rejected(kind) => (kind, false),
+            StepResult::Capped => {
+                m.capped += 1;
+                (Move::Add, false)
+            }
+            StepResult::NoCandidate(kind) => {
+                m.no_candidate += 1;
+                (kind, false)
+            }
+        };
+        let (proposed, taken) = match kind {
+            Move::Remove => (&mut m.proposed_remove, &mut m.accepted_remove),
+            Move::Add => (&mut m.proposed_add, &mut m.accepted_add),
+            Move::Swap => (&mut m.proposed_swap, &mut m.accepted_swap),
+        };
+        *proposed += 1;
+        if accepted {
+            *taken += 1;
+        }
     }
 
     /// Make the cached canonical form match the sampler's current state.
@@ -656,12 +723,12 @@ impl Recorder {
         if self
             .cached
             .as_ref()
-            .is_some_and(|(version, _, _)| *version == sampler.version())
+            .is_some_and(|(id, version, _, _)| *id == sampler.id() && *version == sampler.version())
         {
             return;
         }
         let form = canonical_open_graph(sampler.graph(), sampler.is_open());
-        self.cached = Some((sampler.version(), form.key(), form));
+        self.cached = Some((sampler.id(), sampler.version(), form.key(), form));
     }
 }
 
@@ -1063,6 +1130,7 @@ mod tests {
             "the test needs valid steps after rejected moves"
         );
         assert_eq!(recorder.valid_steps, valid);
+        assert_eq!(recorder.moves, recorded.stats());
         assert_eq!(
             recorder.visits.values().map(|v| v.steps).sum::<u64>(),
             valid

@@ -2,7 +2,7 @@
 //!
 //! A thin layer. It converts between Python and Rust types and does no checks
 //! of its own beyond refusing r = 0, which `compile` treats as a bug. Issues
-//! cross as plain `(code, message, type_index)` tuples; `src/compiled.py`
+//! cross as plain `(code, message, type_index)` tuples; `src/graph_search/compiled.py`
 //! turns them into Python `Issue` objects.
 
 use graph_search_core::{
@@ -12,6 +12,7 @@ use graph_search_core::{
     EnumerationError, Graph, Issue, IssueCode, Node, Outcome, RecordOptions, Recorder,
     RulesetEnergy, Sampler, Settings, Start, DEFAULT_SWAP_RATE,
 };
+use graph_search_core::{Energy, LadderSettings, Tempering};
 
 /// `valid_open_graph6`'s result: candidates, open sets checked, and
 /// `(canonical_graph6, open, automorphisms)` per valid class.
@@ -19,7 +20,7 @@ type OpenGraph6Result = (usize, usize, Vec<(String, Vec<Node>, f64)>);
 use pyo3::exceptions::PyOSError;
 use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::types::{PyDict, PyList, PyTuple};
 
 /// Steps per chunk of a sampler run. Between chunks the run checks for
 /// Ctrl-C, with the GIL held only then.
@@ -256,14 +257,7 @@ impl PyCompiledRuleset {
         start_open: Option<Vec<Node>>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let ruleset = &self.inner;
-        let max_degree = ruleset
-            .pruning()
-            .kept()
-            .iter()
-            .filter_map(|&i| ruleset.ball(i))
-            .map(CompiledBall::root_degree)
-            .max()
-            .ok_or_else(|| PyValueError::new_err("no ball type is kept, so no graph is valid"))?;
+        let max_degree = kept_max_degree(ruleset)?;
         if snapshot_every == Some(0) || trace_every == Some(0) {
             return Err(PyValueError::new_err(
                 "snapshot_every and trace_every must be at least 1",
@@ -297,44 +291,109 @@ impl PyCompiledRuleset {
             py.check_signals()?;
         }
 
-        let stats = sampler.stats();
         let out = PyDict::new(py);
         out.set_item("max_degree", max_degree)?;
-        out.set_item(
-            "stats",
-            (
-                stats.proposed_remove,
-                stats.accepted_remove,
-                stats.proposed_add,
-                stats.accepted_add,
-                stats.proposed_swap,
-                stats.accepted_swap,
-                stats.capped,
-                stats.no_candidate,
-            ),
-        )?;
-        out.set_item("valid_steps", recorder.valid_steps)?;
-        let mut visits: Vec<(String, Vec<Node>, u64, f64)> = recorder
-            .visits
-            .into_values()
-            .map(|v| (v.graph6, v.open, v.steps, v.automorphisms))
+        fill_run(&out, recorder, &sampler)?;
+        Ok(out)
+    }
+
+    /// Run parallel tempering: one replica per β in `betas` (strictly
+    /// increasing, hottest first), each a chain as in `sample`, trading
+    /// states with its neighbours every `swap_interval` steps. `steps` and
+    /// `burn_in` count steps per replica. Each rung (temperature) is
+    /// recorded separately. Returns a dict: `max_degree`, `betas`, `rounds`,
+    /// `pairs` as `(attempts, accepts)` between rungs k and k + 1,
+    /// `passages` (end-to-end ladder crossings), `replica_at`, and `rungs`, a
+    /// list of dicts with the same keys as `sample` returns (`stats` counting
+    /// the moves made at that rung). `threads` 0 uses every core; the result
+    /// does not depend on it. Raises ValueError for bad settings and
+    /// KeyboardInterrupt on Ctrl-C.
+    #[pyo3(signature = (
+        num_nodes, steps, betas, *, seed=0, burn_in=0, snapshot_every=None,
+        count_graphs=true, trace_every=None, start_edges=None, random_start_edges=0,
+        open_nodes=0, swap_rate=DEFAULT_SWAP_RATE, start_open=None, swap_interval=50,
+        threads=0,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn temper<'py>(
+        &self,
+        py: Python<'py>,
+        num_nodes: usize,
+        steps: u64,
+        betas: Vec<f64>,
+        seed: u64,
+        burn_in: u64,
+        snapshot_every: Option<u64>,
+        count_graphs: bool,
+        trace_every: Option<u64>,
+        start_edges: Option<Vec<Edge>>,
+        random_start_edges: usize,
+        open_nodes: usize,
+        swap_rate: f64,
+        start_open: Option<Vec<Node>>,
+        swap_interval: u64,
+        threads: usize,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let ruleset = &self.inner;
+        let max_degree = kept_max_degree(ruleset)?;
+        if snapshot_every == Some(0) || trace_every == Some(0) {
+            return Err(PyValueError::new_err(
+                "snapshot_every and trace_every must be at least 1",
+            ));
+        }
+        let start = match start_edges {
+            Some(edges) => Start::Edges(edges),
+            None => Start::Random {
+                edges: random_start_edges,
+            },
+        };
+        let rungs = betas.len();
+        let settings = LadderSettings {
+            num_nodes,
+            max_degree,
+            betas: betas.clone(),
+            seed,
+            open_nodes,
+            swap_rate,
+            swap_interval,
+            threads,
+        };
+        let energies = (0..rungs).map(|_| RulesetEnergy::new(ruleset)).collect();
+        let mut tempering = Tempering::new(energies, settings, start, start_open)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let options = RecordOptions {
+            burn_in,
+            steps,
+            snapshot_every,
+            count_graphs,
+            trace_every,
+        };
+        let mut recorders: Vec<Recorder> = (0..rungs).map(|_| Recorder::new(options)).collect();
+        while recorders[0].remaining() > 0 {
+            py.detach(|| tempering.run(&mut recorders, SAMPLE_CHUNK))
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            py.check_signals()?;
+        }
+
+        let out = PyDict::new(py);
+        out.set_item("max_degree", max_degree)?;
+        out.set_item("betas", betas)?;
+        out.set_item("rounds", tempering.rounds())?;
+        let pairs: Vec<(u64, u64)> = tempering
+            .pairs()
+            .iter()
+            .map(|p| (p.attempts, p.accepts))
             .collect();
-        visits.sort_by(|a, b| {
-            b.2.cmp(&a.2)
-                .then_with(|| a.0.cmp(&b.0))
-                .then_with(|| a.1.cmp(&b.1))
-        });
-        out.set_item("visits", visits)?;
-        let snapshots: Vec<(u64, Vec<Edge>, Vec<Node>, f64)> = recorder
-            .snapshots
-            .into_iter()
-            .map(|s| (s.step, s.edges, s.open, s.automorphisms))
-            .collect();
-        out.set_item("snapshots", snapshots)?;
-        out.set_item("trace", recorder.trace)?;
-        out.set_item("final_edges", sampler.graph().edges())?;
-        out.set_item("final_open", sampler.open_nodes())?;
-        out.set_item("final_energy", sampler.energy())?;
+        out.set_item("pairs", pairs)?;
+        out.set_item("passages", tempering.passages())?;
+        out.set_item("replica_at", tempering.replica_at().to_vec())?;
+        let rung_list = PyList::empty(py);
+        for (rung, recorder) in recorders.into_iter().enumerate() {
+            let entry = PyDict::new(py);
+            fill_run(&entry, recorder, tempering.sampler_at(rung))?;
+            rung_list.append(entry)?;
+        }
+        out.set_item("rungs", rung_list)?;
         Ok(out)
     }
 
@@ -600,6 +659,68 @@ fn automorphism_count(num_nodes: usize, edges: Vec<Edge>) -> PyResult<f64> {
 fn canonical_graph6(num_nodes: usize, edges: Vec<Edge>) -> PyResult<(String, f64)> {
     let form = canonical_graph(&reference_graph(num_nodes, &edges)?);
     Ok((form.graph6(), form.automorphisms))
+}
+
+/// The degree cap for sampling: the largest root degree among kept types.
+fn kept_max_degree(ruleset: &CompiledRuleset) -> PyResult<usize> {
+    ruleset
+        .pruning()
+        .kept()
+        .iter()
+        .filter_map(|&i| ruleset.ball(i))
+        .map(CompiledBall::root_degree)
+        .max()
+        .ok_or_else(|| PyValueError::new_err("no ball type is kept, so no graph is valid"))
+}
+
+/// Put one recorded chain into `out`: `stats` (proposed_remove,
+/// accepted_remove, proposed_add, accepted_add, proposed_swap,
+/// accepted_swap, capped, no_candidate, as the recorder counted them),
+/// `valid_steps`, `visits`, `snapshots`, `trace`, and the final state of
+/// `sampler` as `final_edges`, `final_open`, `final_energy` and `beta`.
+fn fill_run<E: Energy>(
+    out: &Bound<'_, PyDict>,
+    recorder: Recorder,
+    sampler: &Sampler<E>,
+) -> PyResult<()> {
+    let stats = recorder.moves;
+    out.set_item(
+        "stats",
+        (
+            stats.proposed_remove,
+            stats.accepted_remove,
+            stats.proposed_add,
+            stats.accepted_add,
+            stats.proposed_swap,
+            stats.accepted_swap,
+            stats.capped,
+            stats.no_candidate,
+        ),
+    )?;
+    out.set_item("valid_steps", recorder.valid_steps)?;
+    let mut visits: Vec<(String, Vec<Node>, u64, f64)> = recorder
+        .visits
+        .into_values()
+        .map(|v| (v.graph6, v.open, v.steps, v.automorphisms))
+        .collect();
+    visits.sort_by(|a, b| {
+        b.2.cmp(&a.2)
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    out.set_item("visits", visits)?;
+    let snapshots: Vec<(u64, Vec<Edge>, Vec<Node>, f64)> = recorder
+        .snapshots
+        .into_iter()
+        .map(|s| (s.step, s.edges, s.open, s.automorphisms))
+        .collect();
+    out.set_item("snapshots", snapshots)?;
+    out.set_item("trace", recorder.trace)?;
+    out.set_item("final_edges", sampler.graph().edges())?;
+    out.set_item("final_open", sampler.open_nodes())?;
+    out.set_item("final_energy", sampler.energy())?;
+    out.set_item("beta", sampler.beta())?;
+    Ok(())
 }
 
 /// The canonical graph6, the open nodes' canonical numbers and the number of

@@ -11,8 +11,8 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from balltype import BallType
-from report import IssueCode, LoadReport
+from .balltype import BallType
+from .report import IssueCode, LoadReport
 
 
 @dataclass(frozen=True)

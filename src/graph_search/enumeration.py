@@ -31,8 +31,8 @@ particular binary.
 
 Example::
 
-    from compiled import load_and_compile
-    from enumeration import baseline
+    from graph_search.compiled import load_and_compile
+    from graph_search.enumeration import baseline
 
     compiled, _ = load_and_compile("rulesets/path-ball-r2.json")
     print(baseline(compiled, max_n=10))   # one valid graph per n >= 6: the cycle
@@ -126,7 +126,7 @@ class Baseline:
 
 def cache_dir() -> Path:
     """``$BCGS_CACHE``, or ``.cache`` at the repository root."""
-    return Path(os.environ.get("BCGS_CACHE", Path(__file__).resolve().parent.parent / ".cache"))
+    return Path(os.environ.get("BCGS_CACHE", Path(__file__).resolve().parents[2] / ".cache"))
 
 
 def find_geng() -> str:

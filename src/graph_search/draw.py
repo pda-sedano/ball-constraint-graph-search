@@ -22,14 +22,14 @@ from typing import TYPE_CHECKING, Any
 
 import networkx as nx
 
-from balltype import BallType
-from ruleset import Ruleset
+from .balltype import BallType
+from .ruleset import Ruleset
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
-    from enumeration import Baseline
+    from .enumeration import Baseline
 
 ROOT_COLOR = "tab:red"
 REACHED_COLOR = "tab:blue"

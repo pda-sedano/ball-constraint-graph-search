@@ -19,8 +19,8 @@ module imports the ``graph_search_rs`` extension only when called.
 Example::
 
     import networkx as nx
-    from compiled import load_and_compile
-    from embed import compatible_types
+    from graph_search.compiled import load_and_compile
+    from graph_search.embed import compatible_types
 
     compiled, _ = load_and_compile("rulesets/path-ball-r2.json")
     path = nx.path_graph(6)
@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING
 
 import networkx as nx
 
-from extract import number_nodes
+from .extract import number_nodes
 
 if TYPE_CHECKING:
     from graph_search_rs import CompiledRuleset

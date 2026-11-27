@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 from safetensors.numpy import save_file
 
-from graph_io import GraphFile, load_graph, save_graph
-from report import IssueCode, RulesetError
+from graph_search.graph_io import GraphFile, load_graph, save_graph
+from graph_search.report import IssueCode, RulesetError
 
 
 def write(path, tensors, metadata):

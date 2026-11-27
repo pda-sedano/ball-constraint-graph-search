@@ -1,6 +1,13 @@
 import pytest
 
-from report import SEVERITY, Issue, IssueCode, LoadReport, RulesetError, Severity
+from graph_search.report import (
+    SEVERITY,
+    Issue,
+    IssueCode,
+    LoadReport,
+    RulesetError,
+    Severity,
+)
 
 ERROR_CODE = IssueCode.SELF_LOOP
 WARNING_CODE = IssueCode.SHALLOW_TYPE

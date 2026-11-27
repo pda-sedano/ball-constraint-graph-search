@@ -30,9 +30,9 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
-from balltype import BallType, InvalidBallError
-from report import IssueCode, LoadReport
-from ruleset import Ruleset, check_ruleset
+from .balltype import BallType, InvalidBallError
+from .report import IssueCode, LoadReport
+from .ruleset import Ruleset, check_ruleset
 
 FORMAT_VERSION = 1
 TOP_LEVEL_REQUIRED = frozenset({"format", "name", "r", "types"})

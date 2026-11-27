@@ -20,10 +20,10 @@ from __future__ import annotations
 from os import PathLike
 from typing import TYPE_CHECKING, NamedTuple
 
-from balltype import BallType
-from report import Issue, IssueCode, LoadReport
-from ruleset import Ruleset
-from ruleset_io import load_ruleset
+from .balltype import BallType
+from .report import Issue, IssueCode, LoadReport
+from .ruleset import Ruleset
+from .ruleset_io import load_ruleset
 
 if TYPE_CHECKING:
     from graph_search_rs import CanonicalKey, CompiledRuleset

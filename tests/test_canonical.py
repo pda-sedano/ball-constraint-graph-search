@@ -17,8 +17,8 @@ import pytest
 
 pytest.importorskip("graph_search_rs")
 
-from balltype import BallType  # noqa: E402
-from compiled import canonical_key  # noqa: E402
+from graph_search.balltype import BallType  # noqa: E402
+from graph_search.compiled import canonical_key  # noqa: E402
 
 
 def to_graph(edges):

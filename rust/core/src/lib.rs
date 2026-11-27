@@ -25,6 +25,8 @@
 //! - [`sample`]: the sampler, a Metropolis-Hastings chain over graphs whose
 //!   valid states are visited uniformly, and [`Recorder`] for its results.
 //! - [`rng`]: the sampler's seeded random numbers.
+//! - [`temper`]: parallel tempering, replicas of the sampler on a β ladder
+//!   that trade states.
 
 pub mod ball;
 pub mod canonical;
@@ -40,6 +42,7 @@ pub mod prune;
 pub mod rng;
 pub mod ruleset;
 pub mod sample;
+pub mod temper;
 #[cfg(test)]
 mod testing;
 
@@ -65,3 +68,4 @@ pub use sample::{
     acceptance, Energy, Move, MoveStats, RecordOptions, Recorder, RulesetEnergy, Sampler,
     SamplerError, Settings, Snapshot, Start, StepResult, Visits, ZeroEnergy, DEFAULT_SWAP_RATE,
 };
+pub use temper::{LadderSettings, PairStats, TemperError, Tempering};

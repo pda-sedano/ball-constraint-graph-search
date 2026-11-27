@@ -14,13 +14,13 @@ import pytest
 
 pytest.importorskip("graph_search_rs")
 
-from balltype import BallType  # noqa: E402
-from compiled import compile_ruleset, load_and_compile  # noqa: E402
-from embed import compatible_types  # noqa: E402
-from extract import ruleset_from_graph  # noqa: E402
+from graph_search.balltype import BallType  # noqa: E402
+from graph_search.compiled import compile_ruleset, load_and_compile  # noqa: E402
+from graph_search.embed import compatible_types  # noqa: E402
+from graph_search.extract import ruleset_from_graph  # noqa: E402
 from oracle import compatible_types as oracle_compatible  # noqa: E402
 from oracle import cut_patch  # noqa: E402
-from ruleset import Ruleset  # noqa: E402
+from graph_search.ruleset import Ruleset  # noqa: E402
 
 
 # --- Hand cases ---------------------------------------------------------------------

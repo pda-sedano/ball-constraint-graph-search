@@ -18,7 +18,7 @@ when the graph is checked. Nodes are numbered 0..n-1; labels are not saved.
 Example::
 
     import networkx as nx
-    from graph_io import load_graph, save_graph
+    from graph_search.graph_io import load_graph, save_graph
 
     save_graph("patch.safetensors", nx.path_graph(9), open_nodes=[0, 8],
                metadata={"source": "hand"})
@@ -37,8 +37,8 @@ from typing import Any
 import networkx as nx
 import numpy as np
 
-from extract import number_nodes
-from report import IssueCode, LoadReport
+from .extract import number_nodes
+from .report import IssueCode, LoadReport
 
 FORMAT_VERSION = "1"
 METADATA_KEYS = frozenset({"format", "num_nodes", "metadata"})

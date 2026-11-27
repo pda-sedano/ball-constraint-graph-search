@@ -6,7 +6,7 @@ Two crates in one workspace:
   ball extraction now; the checker and sampler later.
 - `py/` (`graph-search-py`): PyO3 bindings, built by maturin into the Python module `graph_search_rs`.
 
-Python's `src/compiled.py` and `src/extract.py` are the only modules that import `graph_search_rs`,
+Python's `src/graph_search/compiled.py` and `src/graph_search/extract.py` are the only modules that import `graph_search_rs`,
 and only when called. Loading, checking and drawing rulesets work without it.
 
 ## Build and test
@@ -27,7 +27,7 @@ Add `--release` to `maturin develop` once speed matters; debug builds are much s
 
 ## Issue codes
 
-`core/src/issue.rs` mirrors the compile codes in `src/report.py`. When adding a code, add it in both
+`core/src/issue.rs` mirrors the compile codes in `src/graph_search/report.py`. When adding a code, add it in both
 places; `tests/test_compiled.py` checks they match.
 
 ## Canonical form
@@ -153,3 +153,25 @@ about 5 s with `cargo test --release`, about 30 s in a debug build. The Rust tes
 the transition rule's detailed balance exactly on 4 nodes, the chain's distribution with zero and
 random energies, and the recorder's counting against a replayed chain. `tests/test_sampler.py`
 compares real runs with the baseline on a ruleset whose valid graphs are all the cubic graphs.
+
+### Parallel tempering
+
+`core/src/temper.rs` runs K copies of the chain (replicas) on a ladder of inverse temperatures
+β_0 < β_1 < … < β_{K−1}. Every `swap_interval` steps, neighbouring rungs propose to trade replicas,
+accepted with probability min(1, exp((β_k − β_{k+1})(U_k − U_{k+1}))); rounds alternate between
+even and odd pairs. A trade swaps the two replicas' β labels, not their graphs, and every rung keeps
+its own `Recorder`, which follows the rung rather than the replica. Between trades the replicas step
+in parallel on scoped threads; each has its own seed derived from the run's seed, so the result is
+the same for any thread count. Every rung samples exp(−β_k U), so valid states (U = 0) are uniform
+on every rung, and the valid samples of all rungs can be pooled.
+
+From Python, `sampler.temper(compiled, n, steps, betas=..., open_nodes=m, ...)` takes the same
+arguments as `sample` (applied per replica) plus the ladder (default
+`geometric_ladder(0.25, 4.0, 12)`), `swap_interval` (50) and `threads` (0 = all cores). It returns a
+`TemperedRun`: one `Run` per rung (hottest first), the swap rate between each pair of neighbours,
+and the number of times a replica crossed the whole ladder. Print it for a per-rung table.
+`tempered.combined()` pools chosen rungs (all by default) into one `Run` that works with
+`compare_with_baseline`, `shares`, `average` and `save_run`. A swap rate near 0 between two rungs is
+a bottleneck: put more rungs between those βs. The Rust tests check that every rung samples
+exp(−β_k U) exactly on 4 nodes (closed and open), that the thread count changes nothing, and that
+recorders follow rungs; the Python tests check a pooled run against the open cubic enumeration.

@@ -18,7 +18,7 @@ from typing import Any
 
 import networkx as nx
 
-from report import Issue, IssueCode
+from .report import Issue, IssueCode
 
 Edge = tuple[int, int]
 

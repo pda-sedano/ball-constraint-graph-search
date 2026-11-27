@@ -15,8 +15,8 @@ called.
 Example::
 
     import networkx as nx
-    from check import check_graph
-    from compiled import load_and_compile
+    from graph_search.check import check_graph
+    from graph_search.compiled import load_and_compile
 
     compiled, _ = load_and_compile("rulesets/path-ball-r2.json")
     print(check_graph(compiled, nx.cycle_graph(8)))               # valid
@@ -32,8 +32,8 @@ from typing import TYPE_CHECKING
 
 import networkx as nx
 
-from extract import number_nodes
-from graph_io import load_graph
+from .extract import number_nodes
+from .graph_io import load_graph
 
 if TYPE_CHECKING:
     from graph_search_rs import CompiledRuleset

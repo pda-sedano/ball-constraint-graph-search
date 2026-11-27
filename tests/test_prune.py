@@ -13,11 +13,15 @@ import pytest
 
 graph_search_rs = pytest.importorskip("graph_search_rs")
 
-from balltype import BallType  # noqa: E402
-from compiled import compile_ruleset, load_and_compile, removals  # noqa: E402
-from extract import ruleset_from_graph  # noqa: E402
-from report import IssueCode  # noqa: E402
-from ruleset import Ruleset  # noqa: E402
+from graph_search.balltype import BallType  # noqa: E402
+from graph_search.compiled import (  # noqa: E402
+    compile_ruleset,
+    load_and_compile,
+    removals,
+)
+from graph_search.extract import ruleset_from_graph  # noqa: E402
+from graph_search.report import IssueCode  # noqa: E402
+from graph_search.ruleset import Ruleset  # noqa: E402
 
 PRUNING_CODES = {IssueCode.PRUNED_TYPE, IssueCode.UNREALIZABLE}
 
